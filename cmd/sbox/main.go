@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -547,9 +548,16 @@ func authE(cmd *cobra.Command, args []string) error {
 
 // authStatus shows the current authentication status
 func authStatus(cmd *cobra.Command) error {
-	if sbox.HasAuthToken() {
+	if sbox.HasCredentials() {
 		cmd.Println("Status: Authenticated")
-		cmd.Println("Token is stored and will be used for all sandbox sessions.")
+
+		config, err := sbox.LoadConfig()
+		if err == nil {
+			credentialsPath := sbox.GetCredentialsPath(config)
+			cmd.Printf("Credentials stored at: %s\n", credentialsPath)
+		}
+
+		cmd.Println("Credentials will be used for all sandbox sessions.")
 	} else {
 		cmd.Println("Status: Not authenticated")
 		cmd.Println("Run 'sbox auth' to authenticate.")
@@ -557,36 +565,64 @@ func authStatus(cmd *cobra.Command) error {
 	return nil
 }
 
-// authLogout removes the stored authentication token
+// authLogout removes the stored authentication credentials
 func authLogout(cmd *cobra.Command) error {
-	if !sbox.HasAuthToken() {
-		cmd.Println("No authentication token stored.")
+	if !sbox.HasCredentials() {
+		cmd.Println("No authentication credentials stored.")
 		return nil
 	}
 
-	if err := sbox.RemoveAuthToken(); err != nil {
-		return fmt.Errorf("failed to remove token: %w", err)
+	// Remove credentials file from sbox config directory
+	config, err := sbox.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	cmd.Println("Authentication token removed.")
+	credentialsPath := sbox.GetCredentialsPath(config)
+	if err := os.Remove(credentialsPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove credentials: %w", err)
+	}
+
+	// Also remove legacy token file if it exists
+	if err := sbox.RemoveAuthToken(); err != nil && !os.IsNotExist(err) {
+		// Non-fatal, just log
+		cmd.Printf("Warning: failed to remove legacy token file: %v\n", err)
+	}
+
+	cmd.Println("Authentication credentials removed.")
 	return nil
 }
 
 // authLogin runs the interactive authentication flow
 func authLogin(cmd *cobra.Command) error {
-	if sbox.HasAuthToken() {
+	if sbox.HasCredentials() {
 		cmd.Println("Already authenticated. Use 'sbox auth --logout' first to re-authenticate.")
 		return nil
 	}
 
 	cmd.Println("Setting up Claude authentication...")
 	cmd.Println()
-	cmd.Println("This will run 'claude setup-token' to generate a long-lived token.")
-	cmd.Println("The token will be shared across all sandbox sessions.")
+	cmd.Println("This will run 'claude setup-token' to generate credentials.")
+	cmd.Println("The credentials will be shared across all sandbox sessions.")
 	cmd.Println()
 
-	// Run docker sandbox with setup-token command
-	dockerCmd := exec.Command("docker", "sandbox", "run", "claude", "--", "setup-token")
+	// Load config to get sbox data directory
+	config, err := sbox.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Create a temporary directory for the sandbox to write credentials
+	tempDir, err := os.MkdirTemp("", "sbox-auth-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Run docker sandbox with setup-token command, mounting temp directory as ~/.claude
+	dockerCmd := exec.Command("docker", "sandbox", "run",
+		"-v", fmt.Sprintf("%s:/home/agent/.claude", tempDir),
+		"claude", "--", "setup-token")
 	dockerCmd.Stdin = os.Stdin
 	dockerCmd.Stdout = os.Stdout
 	dockerCmd.Stderr = os.Stderr
@@ -595,33 +631,26 @@ func authLogin(cmd *cobra.Command) error {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
 
-	cmd.Println()
-	cmd.Println("Please paste the token that was displayed above:")
-
-	// Read token from stdin
-	var token string
-	if _, err := fmt.Scanln(&token); err != nil {
-		return fmt.Errorf("failed to read token: %w", err)
+	// Copy credentials from temp directory to sbox config directory
+	tempCredentialsPath := filepath.Join(tempDir, ".credentials.json")
+	if _, err := os.Stat(tempCredentialsPath); err != nil {
+		return fmt.Errorf("credentials file was not created: %w", err)
 	}
 
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return fmt.Errorf("no token provided")
+	credData, err := os.ReadFile(tempCredentialsPath)
+	if err != nil {
+		return fmt.Errorf("failed to read credentials: %w", err)
 	}
 
-	// Validate token format (should start with sk-ant-)
-	if !strings.HasPrefix(token, "sk-ant-") {
-		return fmt.Errorf("invalid token format (expected token starting with 'sk-ant-')")
-	}
-
-	// Save the token
-	if err := sbox.SaveAuthToken(token); err != nil {
-		return fmt.Errorf("failed to save token: %w", err)
+	credentialsPath := sbox.GetCredentialsPath(config)
+	if err := os.WriteFile(credentialsPath, credData, 0600); err != nil {
+		return fmt.Errorf("failed to save credentials: %w", err)
 	}
 
 	cmd.Println()
-	cmd.Println("Authentication successful! Token saved.")
-	cmd.Println("All future sandbox sessions will use this token automatically.")
+	cmd.Println("Authentication successful!")
+	cmd.Printf("Credentials saved to: %s\n", credentialsPath)
+	cmd.Println("All future sandbox sessions will use these credentials automatically.")
 
 	return nil
 }

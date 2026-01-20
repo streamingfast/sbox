@@ -127,14 +127,6 @@ func buildDockerArgs(opts SandboxOptions, buildTemplate bool) ([]string, error) 
 		args = append(args, "--mount-docker-socket")
 	}
 
-	// Add auth token as environment variable if available
-	if token, err := GetAuthToken(); err == nil && token != "" {
-		args = append(args, "-e", "CLAUDE_CODE_OAUTH_TOKEN="+token)
-		if buildTemplate {
-			zlog.Debug("using stored auth token")
-		}
-	}
-
 	// Add volume mounts
 	args = append(args, volumeMounts...)
 
@@ -196,10 +188,10 @@ func buildVolumeMounts(opts SandboxOptions, claudeMDPath string, claudeFlags *Cl
 	mounts = append(mounts, "-v", fmt.Sprintf("%s:/home/agent/.claude/CLAUDE.md:ro", claudeMDPath))
 	zlog.Debug("mounting concatenated CLAUDE.md", zap.String("path", claudeMDPath))
 
-	// Mount ~/.claude/credentials.json if it exists (for persistent auth)
-	credentialsPath := filepath.Join(opts.Config.ClaudeHome, "credentials.json")
+	// Mount sbox credentials file if it exists (for persistent auth)
+	credentialsPath := GetCredentialsPath(opts.Config)
 	if _, err := os.Stat(credentialsPath); err == nil {
-		mounts = append(mounts, "-v", fmt.Sprintf("%s:/home/agent/.claude/credentials.json", credentialsPath))
+		mounts = append(mounts, "-v", fmt.Sprintf("%s:/home/agent/.claude/.credentials.json", credentialsPath))
 		zlog.Debug("mounting credentials file", zap.String("path", credentialsPath))
 	} else {
 		zlog.Debug("credentials file not found, skipping", zap.String("path", credentialsPath))

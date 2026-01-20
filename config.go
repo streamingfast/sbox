@@ -593,6 +593,23 @@ func HasAuthToken() bool {
 	return err == nil && token != ""
 }
 
+// GetCredentialsPath returns the path where sbox stores Claude credentials
+func GetCredentialsPath(config *Config) string {
+	return filepath.Join(config.SboxDataDir, "credentials.json")
+}
+
+// HasCredentials checks if Claude credentials file exists in sbox config
+func HasCredentials() bool {
+	globalConfig, err := LoadConfig()
+	if err != nil {
+		return false
+	}
+
+	credentialsPath := GetCredentialsPath(globalConfig)
+	_, err = os.Stat(credentialsPath)
+	return err == nil
+}
+
 // expandPath expands ~ to home directory and makes path absolute
 func expandPath(path string) string {
 	if len(path) > 0 && path[0] == '~' {
