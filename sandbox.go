@@ -36,17 +36,64 @@ type SandboxOptions struct {
 // This is useful for displaying what command would be run.
 // Returns the full argument list (not including "docker" itself).
 func BuildDockerCommand(opts SandboxOptions) ([]string, error) {
+	return buildDockerArgs(opts, false)
+}
+
+// RunSandbox executes the Docker sandbox with all configured mounts and settings
+func RunSandbox(opts SandboxOptions) error {
+	args, err := buildDockerArgs(opts, true)
+	if err != nil {
+		return err
+	}
+
+	zlog.Debug("executing docker command",
+		zap.String("cmd", "docker"),
+		zap.Strings("args", args))
+
+	// Execute docker sandbox run
+	cmd := exec.Command("docker", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker sandbox failed: %w", err)
+	}
+
+	zlog.Info("Docker sandbox exited successfully")
+	return nil
+}
+
+// buildDockerArgs builds the docker sandbox command arguments.
+// If buildTemplate is true, it will actually build the template image if needed.
+// If buildTemplate is false, it will only compute the image name without building.
+func buildDockerArgs(opts SandboxOptions, buildTemplate bool) ([]string, error) {
 	// Merge project profiles with command-line profiles
 	allProfiles := mergeProfiles(opts.ProjectConfig.Profiles, opts.Profiles)
 
-	// Build custom template name if profiles are specified (without actually building)
+	if buildTemplate {
+		zlog.Info("preparing to run Docker sandbox",
+			zap.String("workspace", opts.WorkspaceDir),
+			zap.Bool("mount_docker_socket", opts.MountDockerSocket),
+			zap.Strings("profiles", allProfiles))
+	}
+
+	// Build custom template if profiles are specified
 	var templateImage string
 	if len(allProfiles) > 0 {
 		builder := NewTemplateBuilder(opts.Config, allProfiles)
-		templateImage = builder.ImageName()
+		if buildTemplate {
+			var err error
+			templateImage, err = builder.Build(opts.ForceRebuild)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build custom template: %w", err)
+			}
+		} else {
+			templateImage = builder.ImageName()
+		}
 	}
 
-	// Prepare concatenated CLAUDE.md file path
+	// Prepare concatenated CLAUDE.md file
 	claudeMDPath, err := PrepareMDForSandbox(opts.WorkspaceDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare CLAUDE.md: %w", err)
@@ -55,6 +102,9 @@ func BuildDockerCommand(opts SandboxOptions) ([]string, error) {
 	// Build Claude CLI flags (agents, plugins, etc.)
 	claudeFlags, err := BuildClaudeFlags(opts.Config.ClaudeHome)
 	if err != nil {
+		if buildTemplate {
+			zlog.Warn("failed to build Claude flags, continuing without them", zap.Error(err))
+		}
 		claudeFlags = &ClaudeFlags{}
 	}
 
@@ -77,6 +127,14 @@ func BuildDockerCommand(opts SandboxOptions) ([]string, error) {
 		args = append(args, "--mount-docker-socket")
 	}
 
+	// Add auth token as environment variable if available
+	if token, err := GetAuthToken(); err == nil && token != "" {
+		args = append(args, "-e", "CLAUDE_CODE_OAUTH_TOKEN="+token)
+		if buildTemplate {
+			zlog.Debug("using stored auth token")
+		}
+	}
+
 	// Add volume mounts
 	args = append(args, volumeMounts...)
 
@@ -88,93 +146,6 @@ func BuildDockerCommand(opts SandboxOptions) ([]string, error) {
 	args = append(args, claudeArgs...)
 
 	return args, nil
-}
-
-// RunSandbox executes the Docker sandbox with all configured mounts and settings
-func RunSandbox(opts SandboxOptions) error {
-	// Merge project profiles with command-line profiles
-	allProfiles := mergeProfiles(opts.ProjectConfig.Profiles, opts.Profiles)
-
-	zlog.Info("preparing to run Docker sandbox",
-		zap.String("workspace", opts.WorkspaceDir),
-		zap.Bool("mount_docker_socket", opts.MountDockerSocket),
-		zap.Strings("profiles", allProfiles))
-
-	// Build custom template if profiles are specified
-	var templateImage string
-	if len(allProfiles) > 0 {
-		builder := NewTemplateBuilder(opts.Config, allProfiles)
-		var err error
-		templateImage, err = builder.Build(opts.ForceRebuild)
-		if err != nil {
-			return fmt.Errorf("failed to build custom template: %w", err)
-		}
-	}
-
-	// Prepare concatenated CLAUDE.md file
-	claudeMDPath, err := PrepareMDForSandbox(opts.WorkspaceDir)
-	if err != nil {
-		return fmt.Errorf("failed to prepare CLAUDE.md: %w", err)
-	}
-
-	// Build Claude CLI flags (agents, plugins, etc.)
-	claudeFlags, err := BuildClaudeFlags(opts.Config.ClaudeHome)
-	if err != nil {
-		zlog.Warn("failed to build Claude flags, continuing without them", zap.Error(err))
-		claudeFlags = &ClaudeFlags{}
-	}
-
-	// Build volume mount arguments
-	volumeMounts, err := buildVolumeMounts(opts, claudeMDPath, claudeFlags)
-	if err != nil {
-		return fmt.Errorf("failed to build volume mounts: %w", err)
-	}
-
-	// Build docker command
-	args := []string{"sandbox", "run"}
-
-	// Add custom template if we built one
-	if templateImage != "" && templateImage != "docker/sandbox-templates:claude-code" {
-		args = append(args, "--template", templateImage)
-	}
-
-	// Add Docker socket flag if needed
-	if shouldMountDockerSocket(opts.Config, opts.ProjectConfig, opts.MountDockerSocket) {
-		args = append(args, "--mount-docker-socket")
-	}
-
-	// Add auth token as environment variable if available
-	if token, err := GetAuthToken(); err == nil && token != "" {
-		args = append(args, "-e", "CLAUDE_CODE_OAUTH_TOKEN="+token)
-		zlog.Debug("using stored auth token")
-	}
-
-	// Add volume mounts
-	args = append(args, volumeMounts...)
-
-	// Add the Claude image and CLI flags
-	args = append(args, "claude")
-
-	// Add Claude CLI flags after the image name
-	claudeArgs := buildClaudeCLIArgs(claudeFlags)
-	args = append(args, claudeArgs...)
-
-	zlog.Debug("executing docker command",
-		zap.String("cmd", "docker"),
-		zap.Strings("args", args))
-
-	// Execute docker sandbox run
-	cmd := exec.Command("docker", args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker sandbox failed: %w", err)
-	}
-
-	zlog.Info("Docker sandbox exited successfully")
-	return nil
 }
 
 // mergeProfiles combines project and command-line profiles, removing duplicates
