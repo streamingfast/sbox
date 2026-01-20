@@ -105,14 +105,23 @@ func main() {
 
 		Command(infoE,
 			"info",
-			"List all known projects with their status",
+			"Show project information",
 			Description(`
-				Lists all projects that have been used with sbox, showing:
-				- Workspace path
-				- Sandbox running status
+				Shows information about the sandbox project for the current directory.
+
+				Without flags, shows the current project's status including:
+				- Workspace path and hash
+				- Running status (stopped/running with container info)
 				- Configured profiles
 				- Additional volumes
+				- Docker socket setting
+
+				With --all, lists all known projects that have been used with sbox.
 			`),
+			Flags(func(flags *pflag.FlagSet) {
+				flags.Bool("all", false, "Show all known projects")
+				flags.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
+			}),
 		),
 
 		Command(stopE,
@@ -129,22 +138,6 @@ func main() {
 			`),
 			Flags(func(flags *pflag.FlagSet) {
 				flags.Bool("rm", false, "Also remove container and project data after stopping")
-				flags.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
-			}),
-		),
-
-		Command(statusE,
-			"status",
-			"Show status of the sandbox for this project",
-			Description(`
-				Shows the sandbox status for the current project including:
-				- Workspace path and hash
-				- Running status (stopped/running with container info)
-				- Configured profiles
-				- Additional volumes
-				- Docker socket setting
-			`),
-			Flags(func(flags *pflag.FlagSet) {
 				flags.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 			}),
 		),
@@ -513,10 +506,113 @@ func shellE(cmd *cobra.Command, args []string) error {
 	return sbox.ConnectShell(workspaceDir)
 }
 
-// infoE lists all known projects with their status
+// infoE shows project information
 func infoE(cmd *cobra.Command, args []string) error {
 	sbox.SetupLogging()
 
+	showAll, err := cmd.Flags().GetBool("all")
+	if err != nil {
+		return fmt.Errorf("failed to get all flag: %w", err)
+	}
+
+	if showAll {
+		return infoAllProjects(cmd)
+	}
+
+	return infoCurrentProject(cmd)
+}
+
+// infoCurrentProject shows information for the current project
+func infoCurrentProject(cmd *cobra.Command) error {
+	// Get workspace directory
+	workspaceDir, err := cmd.Flags().GetString("workspace")
+	if err != nil {
+		return fmt.Errorf("failed to get workspace flag: %w", err)
+	}
+	if workspaceDir == "" {
+		workspaceDir, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get current directory: %w", err)
+		}
+	}
+
+	// Check if this workspace is a known project
+	projects, err := sbox.ListProjects()
+	if err != nil {
+		return fmt.Errorf("failed to list projects: %w", err)
+	}
+
+	var project *sbox.ProjectInfo
+	for i := range projects {
+		if projects[i].WorkspacePath == workspaceDir {
+			project = &projects[i]
+			break
+		}
+	}
+
+	if project == nil {
+		cmd.Println("No sandbox has been run in this directory yet.")
+		cmd.Println("Run 'sbox' or 'sbox run' to create a sandbox for this project.")
+		cmd.Println()
+		cmd.Println("Use 'sbox info --all' to list all known projects.")
+		return nil
+	}
+
+	// Load global config
+	config, err := sbox.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Check if sandbox is running for this project
+	status := "stopped"
+	containerName := ""
+	containerID := ""
+	containerImage := ""
+	container, _ := sbox.FindRunningSandbox(workspaceDir)
+	if container != nil {
+		status = "running"
+		containerName = container.Name
+		containerID = container.ID
+		containerImage = container.Image
+	}
+
+	cmd.Printf("Project: %s\n", workspaceDir)
+	cmd.Printf("  Hash:   %s\n", project.Hash)
+	cmd.Printf("  Status: %s\n", status)
+
+	if container != nil {
+		cmd.Printf("  Container:\n")
+		cmd.Printf("    Name:  %s\n", containerName)
+		cmd.Printf("    ID:    %s\n", containerID[:12])
+		cmd.Printf("    Image: %s\n", containerImage)
+	}
+
+	if len(project.Config.Profiles) > 0 {
+		cmd.Printf("  Profiles: %v\n", project.Config.Profiles)
+	}
+	if len(project.Config.Volumes) > 0 {
+		cmd.Printf("  Volumes:  %v\n", project.Config.Volumes)
+	}
+	if project.Config.DockerSocket != "" {
+		cmd.Printf("  Docker:   %s\n", project.Config.DockerSocket)
+	}
+
+	// Build and display the docker command
+	opts := sbox.SandboxOptions{
+		WorkspaceDir:  workspaceDir,
+		Config:        config,
+		ProjectConfig: project.Config,
+	}
+	if dockerArgs, err := sbox.BuildDockerCommand(opts); err == nil {
+		cmd.Printf("  Command:  docker %s\n", formatDockerCommand(dockerArgs))
+	}
+
+	return nil
+}
+
+// infoAllProjects lists all known projects with their status
+func infoAllProjects(cmd *cobra.Command) error {
 	projects, err := sbox.ListProjects()
 	if err != nil {
 		return fmt.Errorf("failed to list projects: %w", err)
@@ -694,81 +790,6 @@ func checkAndWarnMountMismatch(cmd *cobra.Command, workspaceDir string, sandbox 
 		cmd.Println("Docker sandboxes remember their initial mount configuration.")
 		cmd.Println("To apply new mounts, use: sbox run --recreate")
 		cmd.Println()
-	}
-
-	return nil
-}
-
-// statusE shows status for the current project
-func statusE(cmd *cobra.Command, args []string) error {
-	sbox.SetupLogging()
-
-	// Get workspace directory
-	workspaceDir, err := cmd.Flags().GetString("workspace")
-	if err != nil {
-		return fmt.Errorf("failed to get workspace flag: %w", err)
-	}
-	if workspaceDir == "" {
-		workspaceDir, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("failed to get current directory: %w", err)
-		}
-	}
-
-	// Load global config
-	config, err := sbox.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	// Load project config (this also gives us the hash)
-	projectConfig, projectHash, err := sbox.GetProjectConfig(workspaceDir)
-	if err != nil {
-		return fmt.Errorf("failed to load project config: %w", err)
-	}
-
-	// Check if sandbox is running for this project
-	status := "stopped"
-	containerName := ""
-	containerID := ""
-	containerImage := ""
-	container, _ := sbox.FindRunningSandbox(workspaceDir)
-	if container != nil {
-		status = "running"
-		containerName = container.Name
-		containerID = container.ID
-		containerImage = container.Image
-	}
-
-	cmd.Printf("Project: %s\n", workspaceDir)
-	cmd.Printf("  Hash:   %s\n", projectHash)
-	cmd.Printf("  Status: %s\n", status)
-
-	if container != nil {
-		cmd.Printf("  Container:\n")
-		cmd.Printf("    Name:  %s\n", containerName)
-		cmd.Printf("    ID:    %s\n", containerID[:12])
-		cmd.Printf("    Image: %s\n", containerImage)
-	}
-
-	if len(projectConfig.Profiles) > 0 {
-		cmd.Printf("  Profiles: %v\n", projectConfig.Profiles)
-	}
-	if len(projectConfig.Volumes) > 0 {
-		cmd.Printf("  Volumes:  %v\n", projectConfig.Volumes)
-	}
-	if projectConfig.DockerSocket != "" {
-		cmd.Printf("  Docker:   %s\n", projectConfig.DockerSocket)
-	}
-
-	// Build and display the docker command
-	opts := sbox.SandboxOptions{
-		WorkspaceDir:  workspaceDir,
-		Config:        config,
-		ProjectConfig: projectConfig,
-	}
-	if dockerArgs, err := sbox.BuildDockerCommand(opts); err == nil {
-		cmd.Printf("  Command:  docker %s\n", formatDockerCommand(dockerArgs))
 	}
 
 	return nil

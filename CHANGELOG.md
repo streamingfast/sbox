@@ -12,4 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Plugin sharing via `--plugin-dir` flag (each installed plugin is mounted separately)
 - `--recreate` flag for `sbox run` to remove existing sandbox before running
 - Mount mismatch detection with `--recreate` suggestion
-- Docker command display in `sbox info` and `sbox status`
+- Docker command display in `sbox info`
+- `--all` flag to `sbox info` to list all known projects
+- `--workspace/-w` flag to `sbox info` to specify workspace directory
+
+### Changed
+
+- `sbox info` now shows current project info by default (use `--all` for all projects)
+
+### Removed
+
+- `sbox status` command (consolidated into `sbox info`)
