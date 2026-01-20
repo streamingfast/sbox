@@ -518,6 +518,81 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 	return merged, nil
 }
 
+// GetAuthToken retrieves the stored OAuth token from ~/.config/sbox/token
+// Returns empty string if no token is stored
+func GetAuthToken() (string, error) {
+	globalConfig, err := LoadConfig()
+	if err != nil {
+		return "", fmt.Errorf("failed to load global config: %w", err)
+	}
+
+	tokenPath := filepath.Join(globalConfig.SboxDataDir, "token")
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil // No token stored
+		}
+		return "", fmt.Errorf("failed to read token file: %w", err)
+	}
+
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", nil
+	}
+
+	zlog.Debug("loaded auth token", zap.String("token_path", tokenPath))
+	return token, nil
+}
+
+// SaveAuthToken stores the OAuth token to ~/.config/sbox/token with secure permissions
+func SaveAuthToken(token string) error {
+	globalConfig, err := LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load global config: %w", err)
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(globalConfig.SboxDataDir, 0755); err != nil {
+		return fmt.Errorf("failed to create sbox data directory: %w", err)
+	}
+
+	tokenPath := filepath.Join(globalConfig.SboxDataDir, "token")
+
+	// Write with secure permissions (owner read/write only)
+	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0600); err != nil {
+		return fmt.Errorf("failed to write token file: %w", err)
+	}
+
+	zlog.Debug("saved auth token", zap.String("token_path", tokenPath))
+	return nil
+}
+
+// RemoveAuthToken removes the stored OAuth token
+func RemoveAuthToken() error {
+	globalConfig, err := LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load global config: %w", err)
+	}
+
+	tokenPath := filepath.Join(globalConfig.SboxDataDir, "token")
+
+	if err := os.Remove(tokenPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil // Already removed
+		}
+		return fmt.Errorf("failed to remove token file: %w", err)
+	}
+
+	zlog.Debug("removed auth token", zap.String("token_path", tokenPath))
+	return nil
+}
+
+// HasAuthToken checks if an OAuth token is stored
+func HasAuthToken() bool {
+	token, err := GetAuthToken()
+	return err == nil && token != ""
+}
+
 // expandPath expands ~ to home directory and makes path absolute
 func expandPath(path string) string {
 	if len(path) > 0 && path[0] == '~' {

@@ -143,6 +143,12 @@ func RunSandbox(opts SandboxOptions) error {
 		args = append(args, "--mount-docker-socket")
 	}
 
+	// Add auth token as environment variable if available
+	if token, err := GetAuthToken(); err == nil && token != "" {
+		args = append(args, "-e", "CLAUDE_CODE_OAUTH_TOKEN="+token)
+		zlog.Debug("using stored auth token")
+	}
+
 	// Add volume mounts
 	args = append(args, volumeMounts...)
 

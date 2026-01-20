@@ -15,6 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Docker command display in `sbox info`
 - `--all` flag to `sbox info` to list all known projects
 - `--workspace/-w` flag to `sbox info` to specify workspace directory
+- `sbox auth` command for shared authentication across all sandboxes
+  - Generates long-lived OAuth token (valid for 1 year)
+  - Token automatically passed to all sandbox sessions
+  - `--status` flag to check authentication status
+  - `--logout` flag to remove stored token
 
 ### Changed
 

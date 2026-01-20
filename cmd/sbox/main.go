@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -100,6 +101,26 @@ func main() {
 			`),
 			Flags(func(flags *pflag.FlagSet) {
 				flags.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
+			}),
+		),
+
+		Command(authE,
+			"auth",
+			"Authenticate with Claude (shared across all sandboxes)",
+			Description(`
+				Sets up authentication that is shared across all sandbox sessions.
+
+				Without flags, runs the interactive authentication flow:
+				1. Opens browser for OAuth authentication
+				2. Generates a long-lived token (valid for 1 year)
+				3. Stores the token for use by all sandboxes
+
+				With --status, shows the current authentication status.
+				With --logout, removes the stored authentication token.
+			`),
+			Flags(func(flags *pflag.FlagSet) {
+				flags.Bool("status", false, "Show authentication status")
+				flags.Bool("logout", false, "Remove stored authentication token")
 			}),
 		),
 
@@ -504,6 +525,105 @@ func shellE(cmd *cobra.Command, args []string) error {
 	}
 
 	return sbox.ConnectShell(workspaceDir)
+}
+
+// authE handles authentication management
+func authE(cmd *cobra.Command, args []string) error {
+	sbox.SetupLogging()
+
+	showStatus, _ := cmd.Flags().GetBool("status")
+	logout, _ := cmd.Flags().GetBool("logout")
+
+	if showStatus {
+		return authStatus(cmd)
+	}
+
+	if logout {
+		return authLogout(cmd)
+	}
+
+	return authLogin(cmd)
+}
+
+// authStatus shows the current authentication status
+func authStatus(cmd *cobra.Command) error {
+	if sbox.HasAuthToken() {
+		cmd.Println("Status: Authenticated")
+		cmd.Println("Token is stored and will be used for all sandbox sessions.")
+	} else {
+		cmd.Println("Status: Not authenticated")
+		cmd.Println("Run 'sbox auth' to authenticate.")
+	}
+	return nil
+}
+
+// authLogout removes the stored authentication token
+func authLogout(cmd *cobra.Command) error {
+	if !sbox.HasAuthToken() {
+		cmd.Println("No authentication token stored.")
+		return nil
+	}
+
+	if err := sbox.RemoveAuthToken(); err != nil {
+		return fmt.Errorf("failed to remove token: %w", err)
+	}
+
+	cmd.Println("Authentication token removed.")
+	return nil
+}
+
+// authLogin runs the interactive authentication flow
+func authLogin(cmd *cobra.Command) error {
+	if sbox.HasAuthToken() {
+		cmd.Println("Already authenticated. Use 'sbox auth --logout' first to re-authenticate.")
+		return nil
+	}
+
+	cmd.Println("Setting up Claude authentication...")
+	cmd.Println()
+	cmd.Println("This will run 'claude setup-token' to generate a long-lived token.")
+	cmd.Println("The token will be shared across all sandbox sessions.")
+	cmd.Println()
+
+	// Run docker sandbox with setup-token command
+	dockerCmd := exec.Command("docker", "sandbox", "run", "claude", "--", "setup-token")
+	dockerCmd.Stdin = os.Stdin
+	dockerCmd.Stdout = os.Stdout
+	dockerCmd.Stderr = os.Stderr
+
+	if err := dockerCmd.Run(); err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
+	}
+
+	cmd.Println()
+	cmd.Println("Please paste the token that was displayed above:")
+
+	// Read token from stdin
+	var token string
+	if _, err := fmt.Scanln(&token); err != nil {
+		return fmt.Errorf("failed to read token: %w", err)
+	}
+
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return fmt.Errorf("no token provided")
+	}
+
+	// Validate token format (should start with sk-ant-)
+	if !strings.HasPrefix(token, "sk-ant-") {
+		return fmt.Errorf("invalid token format (expected token starting with 'sk-ant-')")
+	}
+
+	// Save the token
+	if err := sbox.SaveAuthToken(token); err != nil {
+		return fmt.Errorf("failed to save token: %w", err)
+	}
+
+	cmd.Println()
+	cmd.Println("Authentication successful! Token saved.")
+	cmd.Println("All future sandbox sessions will use this token automatically.")
+
+	return nil
 }
 
 // infoE shows project information
