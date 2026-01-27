@@ -27,16 +27,54 @@ func NewTemplateBuilder(config *Config, profiles []string) *TemplateBuilder {
 	}
 }
 
-// ProfilesHash computes a deterministic hash of the selected profiles
+// ProfilesHash computes a deterministic hash of the selected profiles (including dependencies)
 func (tb *TemplateBuilder) ProfilesHash() string {
-	// Sort profiles for deterministic hash
-	sorted := make([]string, len(tb.Profiles))
-	copy(sorted, tb.Profiles)
-	sort.Strings(sorted)
+	// Resolve all profiles including dependencies
+	resolved := tb.ResolveProfiles()
 
-	combined := strings.Join(sorted, ",")
+	// Sort profiles for deterministic hash
+	sort.Strings(resolved)
+
+	combined := strings.Join(resolved, ",")
 	hash := sha256.Sum256([]byte(combined))
 	return hex.EncodeToString(hash[:])[:12]
+}
+
+// ResolveProfiles returns the full list of profiles including all dependencies.
+// Dependencies are listed before the profiles that depend on them.
+func (tb *TemplateBuilder) ResolveProfiles() []string {
+	seen := make(map[string]bool)
+	var result []string
+
+	var resolve func(name string)
+	resolve = func(name string) {
+		if seen[name] {
+			return
+		}
+
+		profile, ok := GetProfile(name)
+		if !ok {
+			// Unknown profile, include it anyway (will error later)
+			seen[name] = true
+			result = append(result, name)
+			return
+		}
+
+		// First resolve dependencies
+		for _, dep := range profile.Dependencies {
+			resolve(dep)
+		}
+
+		// Then add this profile
+		seen[name] = true
+		result = append(result, name)
+	}
+
+	for _, name := range tb.Profiles {
+		resolve(name)
+	}
+
+	return result
 }
 
 // ImageName returns the Docker image name for this profile combination
@@ -59,7 +97,7 @@ func (tb *TemplateBuilder) ImageExists() bool {
 	return err == nil
 }
 
-// GenerateDockerfile creates a Dockerfile with all selected profiles
+// GenerateDockerfile creates a Dockerfile with all selected profiles (including dependencies)
 func (tb *TemplateBuilder) GenerateDockerfile() (string, error) {
 	var sb strings.Builder
 
@@ -68,7 +106,10 @@ func (tb *TemplateBuilder) GenerateDockerfile() (string, error) {
 	sb.WriteString("# Switch to root to install packages\n")
 	sb.WriteString("USER root\n\n")
 
-	for _, profileName := range tb.Profiles {
+	// Use resolved profiles to include dependencies in correct order
+	resolvedProfiles := tb.ResolveProfiles()
+
+	for _, profileName := range resolvedProfiles {
 		profile, ok := GetProfile(profileName)
 		if !ok {
 			return "", fmt.Errorf("unknown profile: %s", profileName)

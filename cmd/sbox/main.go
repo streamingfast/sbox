@@ -49,7 +49,7 @@ func main() {
 			Flags(func(flags *pflag.FlagSet) {
 				flags.Bool("docker-socket", false, "Mount Docker socket into sandbox")
 				flags.StringSlice("profile", nil, "Additional profiles to use for this session")
-				flags.Bool("rebuild", false, "Force rebuild of custom template image")
+				flags.Bool("rebuild", false, "Force rebuild of custom template image (also recreates sandbox)")
 				flags.Bool("recreate", false, "Remove existing sandbox to apply new mount configuration")
 				flags.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 			}),
@@ -233,6 +233,11 @@ func runE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get recreate flag: %w", err)
 	}
 
+	// If rebuilding the image, we also need to recreate the sandbox so it uses the new image
+	if rebuild {
+		recreate = true
+	}
+
 	// Check for existing sandbox and handle recreate/mount mismatch
 	existingSandbox, err := sbox.FindDockerSandbox(workspaceDir)
 	if err != nil {
@@ -249,9 +254,28 @@ func runE(cmd *cobra.Command, args []string) error {
 			}
 			cmd.Println("Existing sandbox removed")
 		} else {
-			// Check for mount mismatches and warn
-			if err := checkAndWarnMountMismatch(cmd, workspaceDir, existingSandbox, config, projectConfig); err != nil {
-				zlog.Debug("failed to check mount mismatch", zap.Error(err))
+			// Check for broken mounts that would prevent the sandbox from starting
+			brokenMounts, err := sbox.CheckBrokenMounts(existingSandbox.ID)
+			if err != nil {
+				zlog.Debug("failed to check broken mounts", zap.Error(err))
+			} else if len(brokenMounts) > 0 {
+				cmd.Println()
+				cmd.Println("WARNING: Sandbox has broken mount configurations that will prevent it from starting:")
+				for _, m := range brokenMounts {
+					cmd.Printf("  - %s -> %s\n", m.Source, m.Destination)
+					cmd.Printf("    Reason: %s\n", m.Reason)
+				}
+				cmd.Println()
+				cmd.Printf("Removing stale sandbox %s...\n", existingSandbox.ID)
+				if err := sbox.RemoveDockerSandbox(existingSandbox.ID); err != nil {
+					return fmt.Errorf("failed to remove stale sandbox: %w", err)
+				}
+				cmd.Println("Stale sandbox removed, a new one will be created")
+			} else {
+				// Check for mount mismatches and warn
+				if err := checkAndWarnMountMismatch(cmd, workspaceDir, existingSandbox, config, projectConfig); err != nil {
+					zlog.Debug("failed to check mount mismatch", zap.Error(err))
+				}
 			}
 		}
 	}

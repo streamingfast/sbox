@@ -771,6 +771,13 @@ type MountMismatch struct {
 	Extra []VolumeMount
 }
 
+// BrokenMount represents a mount whose source path no longer exists or is a broken symlink
+type BrokenMount struct {
+	VolumeMount
+	// Reason describes why the mount is broken (e.g., "file not found", "broken symlink")
+	Reason string
+}
+
 // CheckMountMismatch compares expected mounts with actual sandbox mounts.
 // Returns nil if there's no significant mismatch.
 func CheckMountMismatch(containerID string, expectedMounts []VolumeMount) (*MountMismatch, error) {
@@ -815,4 +822,59 @@ func CheckMountMismatch(containerID string, expectedMounts []VolumeMount) (*Moun
 	return &MountMismatch{
 		Missing: missing,
 	}, nil
+}
+
+// CheckBrokenMounts checks if any of the sandbox's configured mounts have source paths
+// that no longer exist or are broken symlinks. This can prevent the sandbox from starting.
+func CheckBrokenMounts(containerID string) ([]BrokenMount, error) {
+	mounts, err := GetSandboxMounts(containerID)
+	if err != nil {
+		return nil, err
+	}
+
+	var broken []BrokenMount
+	for _, m := range mounts {
+		// Skip volume mounts (they don't have host paths)
+		if !strings.HasPrefix(m.Source, "/") {
+			continue
+		}
+
+		// Check if the source path exists
+		info, err := os.Lstat(m.Source)
+		if err != nil {
+			if os.IsNotExist(err) {
+				broken = append(broken, BrokenMount{
+					VolumeMount: m,
+					Reason:      "source path does not exist",
+				})
+			} else {
+				broken = append(broken, BrokenMount{
+					VolumeMount: m,
+					Reason:      fmt.Sprintf("cannot access source path: %v", err),
+				})
+			}
+			continue
+		}
+
+		// If it's a symlink, check if the target exists
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(m.Source)
+			if err != nil {
+				broken = append(broken, BrokenMount{
+					VolumeMount: m,
+					Reason:      fmt.Sprintf("broken symlink: %v", err),
+				})
+				continue
+			}
+			// Verify the resolved target exists
+			if _, err := os.Stat(target); err != nil {
+				broken = append(broken, BrokenMount{
+					VolumeMount: m,
+					Reason:      fmt.Sprintf("symlink target does not exist: %s", target),
+				})
+			}
+		}
+	}
+
+	return broken, nil
 }

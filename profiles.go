@@ -8,6 +8,9 @@ type Profile struct {
 	// Description provides a human-readable explanation of what this profile provides
 	Description string
 
+	// Dependencies lists other profiles that must be installed before this one
+	Dependencies []string
+
 	// DockerfileSnippet contains the Dockerfile commands to install this profile's tools
 	DockerfileSnippet string
 }
@@ -32,12 +35,15 @@ ENV PATH="${GOPATH}/bin:${PATH}"
 	"rust": {
 		Name:        "rust",
 		Description: "Rust programming language toolchain (stable)",
-		DockerfileSnippet: `# Rust toolchain
-RUN apt-get update && apt-get install -y curl build-essential && \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+		DockerfileSnippet: `# Rust toolchain (installed system-wide for all users)
+ENV RUSTUP_HOME="/usr/local/rustup"
+ENV CARGO_HOME="/usr/local/cargo"
+ENV PATH="/usr/local/cargo/bin:${PATH}"
 
-ENV PATH="/root/.cargo/bin:${PATH}"
+RUN apt-get update && apt-get install -y curl build-essential && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path && \
+    chmod -R a+rwx /usr/local/rustup /usr/local/cargo && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 `,
 	},
 	"docker": {
@@ -74,6 +80,27 @@ RUN apt-get update && apt-get install -y \
     unzip && \
     wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && \
     chmod +x /usr/local/bin/yq && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+`,
+	},
+	"substreams": {
+		Name:         "substreams",
+		Description:  "Substreams and Firehose Core CLI tools for blockchain data",
+		Dependencies: []string{"rust"},
+		DockerfileSnippet: `# Substreams CLI (from official Docker image)
+COPY --from=ghcr.io/streamingfast/substreams:latest /app/substreams /usr/local/bin/substreams
+
+# Firehose Core CLI (from official Docker image)
+COPY --from=ghcr.io/streamingfast/firehose-core:latest /app/firecore /usr/local/bin/firecore
+
+# buf CLI and protoc (protobuf compiler)
+RUN apt-get update && apt-get install -y curl unzip && \
+    curl -sSL "https://github.com/bufbuild/buf/releases/latest/download/buf-$(uname -s)-$(uname -m)" -o /usr/local/bin/buf && \
+    chmod +x /usr/local/bin/buf && \
+    PROTOC_VERSION=$(curl -sSL https://api.github.com/repos/protocolbuffers/protobuf/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/') && \
+    curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip && \
+    unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*' && \
+    rm /tmp/protoc.zip && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 `,
 	},

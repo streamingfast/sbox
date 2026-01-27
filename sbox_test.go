@@ -690,3 +690,69 @@ func TestGetInstalledPluginPaths_MissingPluginDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, paths)
 }
+
+func TestResolveProfiles(t *testing.T) {
+	tests := []struct {
+		name     string
+		profiles []string
+		want     []string
+	}{
+		{
+			name:     "no profiles",
+			profiles: nil,
+			want:     nil,
+		},
+		{
+			name:     "single profile without dependencies",
+			profiles: []string{"go"},
+			want:     []string{"go"},
+		},
+		{
+			name:     "profile with dependencies",
+			profiles: []string{"substreams"},
+			want:     []string{"rust", "substreams"},
+		},
+		{
+			name:     "multiple profiles with shared dependency",
+			profiles: []string{"substreams", "rust"},
+			want:     []string{"rust", "substreams"}, // rust only appears once
+		},
+		{
+			name:     "dependency already listed first",
+			profiles: []string{"rust", "substreams"},
+			want:     []string{"rust", "substreams"},
+		},
+		{
+			name:     "multiple independent profiles",
+			profiles: []string{"go", "docker"},
+			want:     []string{"go", "docker"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{}
+			builder := NewTemplateBuilder(config, tt.profiles)
+			got := builder.ResolveProfiles()
+
+			if tt.want == nil {
+				assert.Nil(t, got)
+			} else {
+				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
+}
+
+func TestSubstreamsProfile(t *testing.T) {
+	profile, ok := GetProfile("substreams")
+	require.True(t, ok, "substreams profile should exist")
+
+	assert.Equal(t, "substreams", profile.Name)
+	assert.Contains(t, profile.Description, "Substreams")
+	assert.Contains(t, profile.Dependencies, "rust")
+	assert.Contains(t, profile.DockerfileSnippet, "ghcr.io/streamingfast/substreams")
+	assert.Contains(t, profile.DockerfileSnippet, "ghcr.io/streamingfast/firehose-core")
+	assert.Contains(t, profile.DockerfileSnippet, "buf")
+	assert.Contains(t, profile.DockerfileSnippet, "protoc")
+}
