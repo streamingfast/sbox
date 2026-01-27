@@ -49,8 +49,7 @@ func main() {
 			Flags(func(flags *pflag.FlagSet) {
 				flags.Bool("docker-socket", false, "Mount Docker socket into sandbox")
 				flags.StringSlice("profile", nil, "Additional profiles to use for this session")
-				flags.Bool("rebuild", false, "Force rebuild of custom template image (also recreates sandbox)")
-				flags.Bool("recreate", false, "Remove existing sandbox to apply new mount configuration")
+				flags.Bool("recreate", false, "Force rebuild of custom template image and recreate sandbox")
 				flags.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 			}),
 		),
@@ -69,6 +68,29 @@ func main() {
 				"remove <profiles...>",
 				"Remove profiles from the current project",
 				ExactArgs(1),
+			),
+		),
+
+		Group("env", "Manage environment variables for the sandbox",
+			Command(envListE,
+				"list",
+				"List environment variables for this project",
+			),
+			Command(envAddE,
+				"add <envs...>",
+				"Add environment variables (NAME for host passthrough, NAME=VALUE for explicit)",
+				MinimumNArgs(1),
+				Flags(func(flags *pflag.FlagSet) {
+					flags.Bool("global", false, "Add to global config (shared across all projects)")
+				}),
+			),
+			Command(envRemoveE,
+				"remove <names...>",
+				"Remove environment variables by name",
+				MinimumNArgs(1),
+				Flags(func(flags *pflag.FlagSet) {
+					flags.Bool("global", false, "Remove from global config")
+				}),
 			),
 		),
 
@@ -153,13 +175,16 @@ func main() {
 				Stops the Docker sandbox container for the current project.
 				If no sandbox is running, this command does nothing.
 
-				With --rm, also removes:
-				- The Docker container itself
-				- Project configuration
-				- Cached CLAUDE.md files
+				With --rm, also removes the Docker sandbox after stopping.
+				Project configuration (profiles, envs, etc.) is preserved.
+
+				With --rm --all, removes the Docker sandbox AND all project
+				configuration data (profiles, envs, cached files). Asks for
+				confirmation before proceeding.
 			`),
 			Flags(func(flags *pflag.FlagSet) {
-				flags.Bool("rm", false, "Also remove container and project data after stopping")
+				flags.Bool("rm", false, "Also remove the Docker sandbox after stopping")
+				flags.Bool("all", false, "Also remove all project configuration (requires --rm)")
 				flags.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 			}),
 		),
@@ -223,19 +248,9 @@ func runE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get profile flag: %w", err)
 	}
 
-	rebuild, err := cmd.Flags().GetBool("rebuild")
-	if err != nil {
-		return fmt.Errorf("failed to get rebuild flag: %w", err)
-	}
-
 	recreate, err := cmd.Flags().GetBool("recreate")
 	if err != nil {
 		return fmt.Errorf("failed to get recreate flag: %w", err)
-	}
-
-	// If rebuilding the image, we also need to recreate the sandbox so it uses the new image
-	if rebuild {
-		recreate = true
 	}
 
 	// Check for existing sandbox and handle recreate/mount mismatch
@@ -245,37 +260,42 @@ func runE(cmd *cobra.Command, args []string) error {
 		zlog.Debug("failed to check for existing sandbox", zap.Error(err))
 	}
 
-	if existingSandbox != nil {
-		if recreate {
-			// User explicitly requested recreate - remove existing sandbox
-			cmd.Printf("Removing existing sandbox %s to apply new mount configuration...\n", existingSandbox.ID)
+	if recreate {
+		// Remove existing sandbox so a fresh one is created
+		if existingSandbox != nil {
+			cmd.Printf("Removing existing sandbox %s...\n", existingSandbox.ID)
 			if err := sbox.RemoveDockerSandbox(existingSandbox.ID); err != nil {
 				return fmt.Errorf("failed to remove existing sandbox: %w", err)
 			}
 			cmd.Println("Existing sandbox removed")
-		} else {
-			// Check for broken mounts that would prevent the sandbox from starting
-			brokenMounts, err := sbox.CheckBrokenMounts(existingSandbox.ID)
-			if err != nil {
-				zlog.Debug("failed to check broken mounts", zap.Error(err))
-			} else if len(brokenMounts) > 0 {
-				cmd.Println()
-				cmd.Println("WARNING: Sandbox has broken mount configurations that will prevent it from starting:")
-				for _, m := range brokenMounts {
-					cmd.Printf("  - %s -> %s\n", m.Source, m.Destination)
-					cmd.Printf("    Reason: %s\n", m.Reason)
-				}
-				cmd.Println()
+		}
+	} else if existingSandbox != nil {
+		// Check for broken mounts that would prevent the sandbox from starting
+		brokenMounts, err := sbox.CheckBrokenMounts(existingSandbox.ID)
+		if err != nil {
+			zlog.Debug("failed to check broken mounts", zap.Error(err))
+		} else if len(brokenMounts) > 0 {
+			cmd.Println()
+			cmd.Println("WARNING: Sandbox has broken mount configurations that will prevent it from starting:")
+			for _, m := range brokenMounts {
+				cmd.Printf("  - %s -> %s\n", m.Source, m.Destination)
+				cmd.Printf("    Reason: %s\n", m.Reason)
+			}
+			cmd.Println()
+			answeredYes, _ := AskConfirmation("Recreate sandbox to fix broken mounts?")
+			if answeredYes {
 				cmd.Printf("Removing stale sandbox %s...\n", existingSandbox.ID)
 				if err := sbox.RemoveDockerSandbox(existingSandbox.ID); err != nil {
 					return fmt.Errorf("failed to remove stale sandbox: %w", err)
 				}
 				cmd.Println("Stale sandbox removed, a new one will be created")
 			} else {
-				// Check for mount mismatches and warn
-				if err := checkAndWarnMountMismatch(cmd, workspaceDir, existingSandbox, config, projectConfig); err != nil {
-					zlog.Debug("failed to check mount mismatch", zap.Error(err))
-				}
+				cmd.Println("Continuing with existing sandbox...")
+			}
+		} else {
+			// Check for mount mismatches and warn
+			if err := checkAndWarnMountMismatch(cmd, workspaceDir, existingSandbox, config, projectConfig); err != nil {
+				zlog.Debug("failed to check mount mismatch", zap.Error(err))
 			}
 		}
 	}
@@ -292,7 +312,7 @@ func runE(cmd *cobra.Command, args []string) error {
 		WorkspaceDir:      workspaceDir,
 		MountDockerSocket: dockerSocket,
 		Profiles:          profiles,
-		ForceRebuild:      rebuild,
+		ForceRebuild:      recreate,
 		Config:            config,
 		ProjectConfig:     projectConfig,
 	}
@@ -385,7 +405,7 @@ func profileAddE(cmd *cobra.Command, args []string) error {
 	}
 
 	cmd.Printf("Added profile '%s' to project\n", profileName)
-	cmd.Println("Run 'sbox run --rebuild' to rebuild the sandbox with this profile")
+	cmd.Println("Run 'sbox run --recreate' to rebuild and recreate the sandbox with this profile")
 	return nil
 }
 
@@ -431,7 +451,229 @@ func profileRemoveE(cmd *cobra.Command, args []string) error {
 	}
 
 	cmd.Printf("Removed profile '%s' from project\n", profileName)
-	cmd.Println("Run 'sbox run --rebuild' to rebuild the sandbox without this profile")
+	cmd.Println("Run 'sbox run --recreate' to rebuild and recreate the sandbox without this profile")
+	return nil
+}
+
+// envListE lists environment variables for the current project
+func envListE(cmd *cobra.Command, args []string) error {
+	sbox.SetupLogging()
+
+	workspaceDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	config, err := sbox.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	projectConfig, _, err := sbox.GetProjectConfig(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to load project config: %w", err)
+	}
+
+	sboxFile, err := sbox.FindSboxFile(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to load .sbox file: %w", err)
+	}
+
+	var sboxEnvs []string
+	if sboxFile != nil && sboxFile.Config != nil {
+		sboxEnvs = sboxFile.Config.Envs
+	}
+
+	_, resolved := sbox.MergeEnvs(config.Envs, projectConfig.Envs, sboxEnvs)
+
+	if len(resolved) == 0 {
+		cmd.Println("No environment variables configured.")
+		cmd.Println("Use 'sbox env add NAME=VALUE' or 'sbox env add --global NAME' to add one.")
+		return nil
+	}
+
+	cmd.Println("Environment variables:")
+	cmd.Println()
+	printResolvedEnvs(cmd, resolved, "  ")
+
+	return nil
+}
+
+// envAddE adds environment variables to the current project or global config
+func envAddE(cmd *cobra.Command, args []string) error {
+	sbox.SetupLogging()
+
+	global, _ := cmd.Flags().GetBool("global")
+
+	if global {
+		return envAddGlobal(cmd, args)
+	}
+	return envAddProject(cmd, args)
+}
+
+func envAddGlobal(cmd *cobra.Command, args []string) error {
+	config, err := sbox.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	envMap := make(map[string]int)
+	for i, e := range config.Envs {
+		envMap[sbox.EnvName(e)] = i
+	}
+
+	for _, arg := range args {
+		name := sbox.EnvName(arg)
+		if name == "" {
+			return fmt.Errorf("invalid environment variable: %q", arg)
+		}
+
+		if idx, exists := envMap[name]; exists {
+			config.Envs[idx] = arg
+			cmd.Printf("Updated '%s' (global)\n", name)
+		} else {
+			config.Envs = append(config.Envs, arg)
+			envMap[name] = len(config.Envs) - 1
+			cmd.Printf("Added '%s' (global)\n", name)
+		}
+	}
+
+	if err := sbox.SaveConfig(config); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	cmd.Println("Run 'sbox run --recreate' to apply changes to the running sandbox.")
+	return nil
+}
+
+func envAddProject(cmd *cobra.Command, args []string) error {
+	workspaceDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	projectConfig, _, err := sbox.GetProjectConfig(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to load project config: %w", err)
+	}
+
+	envMap := make(map[string]int)
+	for i, e := range projectConfig.Envs {
+		envMap[sbox.EnvName(e)] = i
+	}
+
+	for _, arg := range args {
+		name := sbox.EnvName(arg)
+		if name == "" {
+			return fmt.Errorf("invalid environment variable: %q", arg)
+		}
+
+		if idx, exists := envMap[name]; exists {
+			projectConfig.Envs[idx] = arg
+			cmd.Printf("Updated '%s' (project)\n", name)
+		} else {
+			projectConfig.Envs = append(projectConfig.Envs, arg)
+			envMap[name] = len(projectConfig.Envs) - 1
+			cmd.Printf("Added '%s' (project)\n", name)
+		}
+	}
+
+	if err := sbox.SaveProjectConfig(workspaceDir, projectConfig); err != nil {
+		return fmt.Errorf("failed to save project config: %w", err)
+	}
+
+	cmd.Println("Run 'sbox run --recreate' to apply changes to the running sandbox.")
+	return nil
+}
+
+// envRemoveE removes environment variables from the current project or global config
+func envRemoveE(cmd *cobra.Command, args []string) error {
+	sbox.SetupLogging()
+
+	global, _ := cmd.Flags().GetBool("global")
+
+	if global {
+		return envRemoveGlobal(cmd, args)
+	}
+	return envRemoveProject(cmd, args)
+}
+
+func envRemoveGlobal(cmd *cobra.Command, args []string) error {
+	config, err := sbox.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	removeSet := make(map[string]bool)
+	for _, name := range args {
+		removeSet[name] = true
+	}
+
+	var kept []string
+	removed := 0
+	for _, env := range config.Envs {
+		if removeSet[sbox.EnvName(env)] {
+			cmd.Printf("Removed '%s' (global)\n", sbox.EnvName(env))
+			removed++
+		} else {
+			kept = append(kept, env)
+		}
+	}
+
+	if removed == 0 {
+		cmd.Println("No matching global environment variables found.")
+		return nil
+	}
+
+	config.Envs = kept
+
+	if err := sbox.SaveConfig(config); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	cmd.Println("Run 'sbox run --recreate' to apply changes to the running sandbox.")
+	return nil
+}
+
+func envRemoveProject(cmd *cobra.Command, args []string) error {
+	workspaceDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	projectConfig, _, err := sbox.GetProjectConfig(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to load project config: %w", err)
+	}
+
+	removeSet := make(map[string]bool)
+	for _, name := range args {
+		removeSet[name] = true
+	}
+
+	var kept []string
+	removed := 0
+	for _, env := range projectConfig.Envs {
+		if removeSet[sbox.EnvName(env)] {
+			cmd.Printf("Removed '%s' (project)\n", sbox.EnvName(env))
+			removed++
+		} else {
+			kept = append(kept, env)
+		}
+	}
+
+	if removed == 0 {
+		cmd.Println("No matching project environment variables found.")
+		return nil
+	}
+
+	projectConfig.Envs = kept
+
+	if err := sbox.SaveProjectConfig(workspaceDir, projectConfig); err != nil {
+		return fmt.Errorf("failed to save project config: %w", err)
+	}
+
+	cmd.Println("Run 'sbox run --recreate' to apply changes to the running sandbox.")
 	return nil
 }
 
@@ -737,35 +979,57 @@ func infoCurrentProject(cmd *cobra.Command) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Check if sandbox is running for this project
-	status := "stopped"
-	containerName := ""
-	containerID := ""
-	containerImage := ""
-	container, _ := sbox.FindRunningSandbox(workspaceDir)
-	if container != nil {
-		status = "running"
-		containerName = container.Name
-		containerID = container.ID
-		containerImage = container.Image
-	}
-
 	cmd.Printf("Project: %s\n", workspaceDir)
 	cmd.Printf("  Hash:   %s\n", project.Hash)
-	cmd.Printf("  Status: %s\n", status)
 
-	if container != nil {
+	// Show container if running, otherwise show sandbox info
+	container, containerErr := sbox.FindRunningSandbox(workspaceDir)
+	if containerErr != nil {
+		cmd.Printf("  Container: error: %s\n", containerErr)
+	} else if container != nil {
 		cmd.Printf("  Container:\n")
-		cmd.Printf("    Name:  %s\n", containerName)
-		cmd.Printf("    ID:    %s\n", containerID[:12])
-		cmd.Printf("    Image: %s\n", containerImage)
+		cmd.Printf("    ID:     %s\n", container.ID[:12])
+		cmd.Printf("    Name:   %s\n", container.Name)
+		cmd.Printf("    Status: running\n")
+	} else {
+		sandbox, sandboxErr := sbox.FindDockerSandbox(workspaceDir)
+		if sandboxErr != nil {
+			cmd.Printf("  Sandbox: error: %s\n", sandboxErr)
+		} else if sandbox != nil {
+			cmd.Printf("  Sandbox:\n")
+			cmd.Printf("    ID:     %s\n", sandbox.ID)
+			if sandbox.Name != "" {
+				cmd.Printf("    Name:   %s\n", sandbox.Name)
+			}
+			cmd.Printf("    Status: stopped\n")
+			if sandbox.Image != "" {
+				cmd.Printf("    Image:  %s\n", sandbox.Image)
+			}
+		} else {
+			cmd.Printf("  Sandbox: none\n")
+		}
 	}
 
 	if len(project.Config.Profiles) > 0 {
-		cmd.Printf("  Profiles: %v\n", project.Config.Profiles)
+		cmd.Printf("  Profiles:\n")
+		for _, p := range project.Config.Profiles {
+			cmd.Printf("    - %s\n", p)
+		}
 	}
 	if len(project.Config.Volumes) > 0 {
 		cmd.Printf("  Volumes:  %v\n", project.Config.Volumes)
+	}
+	// Show merged envs with sources
+	{
+		var sboxEnvs []string
+		if sboxFile, err := sbox.FindSboxFile(workspaceDir); err == nil && sboxFile != nil && sboxFile.Config != nil {
+			sboxEnvs = sboxFile.Config.Envs
+		}
+		_, resolved := sbox.MergeEnvs(config.Envs, project.Config.Envs, sboxEnvs)
+		if len(resolved) > 0 {
+			cmd.Printf("  Envs:\n")
+			printResolvedEnvs(cmd, resolved, "    ")
+		}
 	}
 	if project.Config.DockerSocket != "" {
 		cmd.Printf("  Docker:   %s\n", project.Config.DockerSocket)
@@ -778,7 +1042,7 @@ func infoCurrentProject(cmd *cobra.Command) error {
 		ProjectConfig: project.Config,
 	}
 	if dockerArgs, err := sbox.BuildDockerCommand(opts); err == nil {
-		cmd.Printf("  Command:  docker %s\n", formatDockerCommand(dockerArgs))
+		cmd.Printf("  Command:\n    docker %s\n", formatDockerCommand(dockerArgs))
 	}
 
 	return nil
@@ -814,31 +1078,62 @@ func infoAllProjects(cmd *cobra.Command) error {
 			}
 		}
 
-		// Check if sandbox is running for this project (only if we have a path)
-		status := "stopped"
-		containerName := ""
-		if workspacePath != "" {
-			container, _ := sbox.FindRunningSandbox(workspacePath)
-			if container != nil {
-				status = fmt.Sprintf("running (%s)", container.ID[:12])
-				containerName = container.Name
-			}
-		} else {
-			status = "unknown"
-		}
-
 		cmd.Printf("  %s\n", pathDisplay)
 		cmd.Printf("    Hash:     %s\n", project.Hash)
-		cmd.Printf("    Status:   %s\n", status)
-		if containerName != "" {
-			cmd.Printf("    Container: %s\n", containerName)
+
+		// Show container if running, otherwise show sandbox info
+		if workspacePath != "" {
+			container, containerErr := sbox.FindRunningSandbox(workspacePath)
+			if containerErr != nil {
+				cmd.Printf("    Container: error: %s\n", containerErr)
+			} else if container != nil {
+				cmd.Printf("    Container:\n")
+				cmd.Printf("      ID:     %s\n", container.ID[:12])
+				cmd.Printf("      Name:   %s\n", container.Name)
+				cmd.Printf("      Status: running\n")
+			} else {
+				sandbox, sandboxErr := sbox.FindDockerSandbox(workspacePath)
+				if sandboxErr != nil {
+					cmd.Printf("    Sandbox:  error: %s\n", sandboxErr)
+				} else if sandbox != nil {
+					cmd.Printf("    Sandbox:\n")
+					cmd.Printf("      ID:     %s\n", sandbox.ID)
+					if sandbox.Name != "" {
+						cmd.Printf("      Name:   %s\n", sandbox.Name)
+					}
+					cmd.Printf("      Status: stopped\n")
+					if sandbox.Image != "" {
+						cmd.Printf("      Image:  %s\n", sandbox.Image)
+					}
+				} else {
+					cmd.Printf("    Sandbox:  none\n")
+				}
+			}
+		} else {
+			cmd.Printf("    Sandbox:  unknown\n")
 		}
 
 		if len(project.Config.Profiles) > 0 {
-			cmd.Printf("    Profiles: %v\n", project.Config.Profiles)
+			cmd.Printf("    Profiles:\n")
+			for _, p := range project.Config.Profiles {
+				cmd.Printf("      - %s\n", p)
+			}
 		}
 		if len(project.Config.Volumes) > 0 {
 			cmd.Printf("    Volumes:  %v\n", project.Config.Volumes)
+		}
+		// Show merged envs with sources
+		{
+			globalConfig, err := sbox.LoadConfig()
+			var globalEnvs []string
+			if err == nil {
+				globalEnvs = globalConfig.Envs
+			}
+			_, resolved := sbox.MergeEnvs(globalEnvs, project.Config.Envs, nil)
+			if len(resolved) > 0 {
+				cmd.Printf("    Envs:\n")
+				printResolvedEnvs(cmd, resolved, "      ")
+			}
 		}
 		if project.Config.DockerSocket != "" {
 			cmd.Printf("    Docker:   %s\n", project.Config.DockerSocket)
@@ -855,7 +1150,7 @@ func infoAllProjects(cmd *cobra.Command) error {
 						ProjectConfig: project.Config,
 					}
 					if dockerArgs, err := sbox.BuildDockerCommand(opts); err == nil {
-						cmd.Printf("    Command:  docker %s\n", formatDockerCommand(dockerArgs))
+						cmd.Printf("    Command:\n    docker %s\n", formatDockerCommand(dockerArgs))
 					}
 				}
 			}
@@ -882,33 +1177,44 @@ func stopE(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Get --rm flag
-	removeData, err := cmd.Flags().GetBool("rm")
-	if err != nil {
-		return fmt.Errorf("failed to get rm flag: %w", err)
+	removeSandbox, _ := cmd.Flags().GetBool("rm")
+	removeAll, _ := cmd.Flags().GetBool("all")
+
+	// --all requires --rm
+	if removeAll && !removeSandbox {
+		return fmt.Errorf("--all requires --rm (use 'sbox stop --rm --all')")
+	}
+
+	// --all asks for confirmation
+	if removeAll {
+		answeredYes, _ := AskConfirmation("This will remove the Docker sandbox AND all project configuration (profiles, envs, cached files) for %s. Continue?", workspaceDir)
+		if !answeredYes {
+			cmd.Println("Aborted.")
+			return nil
+		}
 	}
 
 	// Stop the sandbox (and remove container if --rm is set)
-	container, err := sbox.StopSandbox(workspaceDir, removeData)
+	container, err := sbox.StopSandbox(workspaceDir, removeSandbox)
 	if err != nil {
 		return fmt.Errorf("failed to stop sandbox: %w", err)
 	}
 
 	if container != nil {
 		cmd.Printf("Sandbox stopped: %s (%s)\n", container.Name, container.ID[:12])
-		if removeData {
+		if removeSandbox {
 			cmd.Printf("Container removed: %s\n", container.Name)
 		}
 	} else {
 		cmd.Println("No sandbox was running for this project")
 	}
 
-	// Remove project data if requested
-	if removeData {
+	// Remove project config data only if --all was specified
+	if removeAll {
 		if err := sbox.RemoveProjectData(workspaceDir); err != nil {
 			return fmt.Errorf("failed to remove project data: %w", err)
 		}
-		cmd.Println("Project data removed")
+		cmd.Println("Project configuration removed")
 	}
 
 	return nil
@@ -966,6 +1272,42 @@ func checkAndWarnMountMismatch(cmd *cobra.Command, workspaceDir string, sandbox 
 	}
 
 	return nil
+}
+
+// printResolvedEnvs prints resolved environment variables with source tags and host resolution hints.
+// The prefix is prepended to each line for indentation.
+func printResolvedEnvs(cmd *cobra.Command, resolved []sbox.ResolvedEnv, prefix string) {
+	hasPassthrough := false
+	hasUnset := false
+
+	for _, r := range resolved {
+		name := sbox.EnvName(r.Spec)
+		sourceTag := fmt.Sprintf("  [%s]", r.Source)
+
+		if strings.Contains(r.Spec, "=") {
+			value := r.Spec[len(name)+1:]
+			cmd.Printf("%s%s=%s%s\n", prefix, name, value, sourceTag)
+		} else {
+			hostValue, found := os.LookupEnv(name)
+			if found {
+				cmd.Printf("%s%s=%s  (from host*)%s\n", prefix, name, hostValue, sourceTag)
+				hasPassthrough = true
+			} else {
+				cmd.Printf("%s%s  (not set on host, will be empty in sandbox)%s\n", prefix, name, sourceTag)
+				hasUnset = true
+			}
+		}
+	}
+
+	if hasPassthrough || hasUnset {
+		cmd.Println()
+	}
+	if hasPassthrough {
+		cmd.Printf("%s* Value resolved from current host environment; may differ at 'sbox run' time.\n", prefix)
+	}
+	if hasUnset {
+		cmd.Printf("%sHint: set missing variables on your host or use 'sbox env add NAME=VALUE' to set an explicit value.\n", prefix)
+	}
 }
 
 // formatDockerCommand formats docker command arguments for display.

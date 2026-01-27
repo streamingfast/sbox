@@ -691,6 +691,124 @@ func TestGetInstalledPluginPaths_MissingPluginDir(t *testing.T) {
 	assert.Nil(t, paths)
 }
 
+func TestEnvName(t *testing.T) {
+	tests := []struct {
+		spec string
+		want string
+	}{
+		{"FOO", "FOO"},
+		{"FOO=bar", "FOO"},
+		{"FOO=", "FOO"},
+		{"FOO=bar=baz", "FOO"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.spec, func(t *testing.T) {
+			assert.Equal(t, tt.want, EnvName(tt.spec))
+		})
+	}
+}
+
+func TestProjectConfigEnvs(t *testing.T) {
+	// Save and restore HOME
+	origHome := os.Getenv("HOME")
+	tempDir := t.TempDir()
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	workspaceDir := filepath.Join(tempDir, "env-project")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0755))
+
+	// Save project config with envs
+	projectConfig := &ProjectConfig{
+		Envs: []string{"FOO=bar", "BAZ"},
+	}
+	require.NoError(t, SaveProjectConfig(workspaceDir, projectConfig))
+
+	// Load it back
+	loaded, _, err := GetProjectConfig(workspaceDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"FOO=bar", "BAZ"}, loaded.Envs)
+}
+
+func TestMergeProjectConfigEnvs(t *testing.T) {
+	projectConfig := &ProjectConfig{
+		Envs: []string{"FOO=bar", "SHARED=old"},
+	}
+
+	sboxFile := &SboxFileLocation{
+		Path: "/tmp/.sbox",
+		Dir:  "/tmp",
+		Config: &SboxFileConfig{
+			Envs: []string{"BAZ=qux", "SHARED=new_ignored"},
+		},
+	}
+
+	merged, err := MergeProjectConfig(projectConfig, sboxFile)
+	require.NoError(t, err)
+
+	// BAZ should be added, SHARED should NOT be duplicated (project wins)
+	assert.Equal(t, []string{"FOO=bar", "SHARED=old", "BAZ=qux"}, merged.Envs)
+}
+
+func TestMergeEnvs(t *testing.T) {
+	tests := []struct {
+		name       string
+		global     []string
+		project    []string
+		sboxFile   []string
+		wantMerged []string
+		wantSources []string // parallel to wantMerged
+	}{
+		{
+			name:       "empty",
+			wantMerged: nil,
+		},
+		{
+			name:        "global only",
+			global:      []string{"FOO=bar"},
+			wantMerged:  []string{"FOO=bar"},
+			wantSources: []string{"global"},
+		},
+		{
+			name:        "project overrides global",
+			global:      []string{"FOO=global", "BAZ=keep"},
+			project:     []string{"FOO=project"},
+			wantMerged:  []string{"FOO=project", "BAZ=keep"},
+			wantSources: []string{"project", "global"},
+		},
+		{
+			name:        "sbox overrides global, project overrides sbox",
+			global:      []string{"A=global"},
+			sboxFile:    []string{"A=sbox", "B=sbox"},
+			project:     []string{"B=project", "C=project"},
+			wantMerged:  []string{"A=sbox", "B=project", "C=project"},
+			wantSources: []string{".sbox", "project", "project"},
+		},
+		{
+			name:        "passthrough preserved",
+			global:      []string{"TOKEN"},
+			project:     []string{"DEBUG=1"},
+			wantMerged:  []string{"TOKEN", "DEBUG=1"},
+			wantSources: []string{"global", "project"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			merged, resolved := MergeEnvs(tt.global, tt.project, tt.sboxFile)
+			assert.Equal(t, tt.wantMerged, merged)
+
+			if tt.wantSources != nil {
+				require.Len(t, resolved, len(tt.wantSources))
+				for i, r := range resolved {
+					assert.Equal(t, tt.wantSources[i], r.Source, "source mismatch for %s", r.Spec)
+				}
+			}
+		})
+	}
+}
+
 func TestResolveProfiles(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -755,4 +873,64 @@ func TestSubstreamsProfile(t *testing.T) {
 	assert.Contains(t, profile.DockerfileSnippet, "ghcr.io/streamingfast/firehose-core")
 	assert.Contains(t, profile.DockerfileSnippet, "buf")
 	assert.Contains(t, profile.DockerfileSnippet, "protoc")
+}
+
+func TestParseSandboxLsOutput(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		expected []DockerSandbox
+	}{
+		{
+			name: "single sandbox",
+			output: `SANDBOX ID                                                         TEMPLATE                               NAME                               WORKSPACE                                                  STATUS    CREATED
+9bce5b789ffd7460195a5c3d7aac9e5dc181c04f1c50135392e3f2d220a765c5   docker/sandbox-templates:claude-code   claude-sandbox-2026-01-27-103821   /Users/maoueh/work/sf/substreams-eth-uni-v4-demo-candles   running   2026-01-27 15:38:21
+`,
+			expected: []DockerSandbox{
+				{
+					ID:        "9bce5b789ffd7460195a5c3d7aac9e5dc181c04f1c50135392e3f2d220a765c5",
+					Image:     "docker/sandbox-templates:claude-code",
+					Name:      "claude-sandbox-2026-01-27-103821",
+					Workspace: "/Users/maoueh/work/sf/substreams-eth-uni-v4-demo-candles",
+					Status:    "running",
+				},
+			},
+		},
+		{
+			name:     "empty output",
+			output:   "SANDBOX ID   TEMPLATE   NAME   WORKSPACE   STATUS   CREATED\n",
+			expected: nil,
+		},
+		{
+			name: "multiple sandboxes",
+			output: `SANDBOX ID                                                         TEMPLATE                               NAME                               WORKSPACE                                                  STATUS    CREATED
+9bce5b789ffd7460195a5c3d7aac9e5dc181c04f1c50135392e3f2d220a765c5   docker/sandbox-templates:claude-code   claude-sandbox-2026-01-27-103821   /Users/maoueh/work/sf/substreams-eth-uni-v4-demo-candles   running   2026-01-27 15:38:21
+abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd   docker/sandbox-templates:claude-code   claude-sandbox-2026-01-27-120000   /Users/maoueh/work/sf/other-project                       stopped   2026-01-27 17:00:00
+`,
+			expected: []DockerSandbox{
+				{
+					ID:        "9bce5b789ffd7460195a5c3d7aac9e5dc181c04f1c50135392e3f2d220a765c5",
+					Image:     "docker/sandbox-templates:claude-code",
+					Name:      "claude-sandbox-2026-01-27-103821",
+					Workspace: "/Users/maoueh/work/sf/substreams-eth-uni-v4-demo-candles",
+					Status:    "running",
+				},
+				{
+					ID:        "abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd",
+					Image:     "docker/sandbox-templates:claude-code",
+					Name:      "claude-sandbox-2026-01-27-120000",
+					Workspace: "/Users/maoueh/work/sf/other-project",
+					Status:    "stopped",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sandboxes, err := parseSandboxLsOutput(tt.output)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, sandboxes)
+		})
+	}
 }

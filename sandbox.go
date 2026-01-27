@@ -127,6 +127,23 @@ func buildDockerArgs(opts SandboxOptions, buildTemplate bool) ([]string, error) 
 		args = append(args, "--mount-docker-socket")
 	}
 
+	// Add environment variables (global merged with project, project overrides global).
+	// Docker sandbox doesn't support -e NAME passthrough, so we resolve name-only
+	// entries from the host environment into NAME=VALUE form.
+	mergedEnvs, _ := MergeEnvs(opts.Config.Envs, opts.ProjectConfig.Envs, nil)
+	for _, env := range mergedEnvs {
+		if !strings.Contains(env, "=") {
+			// Name-only: resolve from host
+			val, ok := os.LookupEnv(env)
+			if !ok {
+				zlog.Debug("skipping unset env var", zap.String("name", env))
+				continue
+			}
+			env = env + "=" + val
+		}
+		args = append(args, "-e", env)
+	}
+
 	// Add volume mounts
 	args = append(args, volumeMounts...)
 
@@ -355,8 +372,12 @@ type SandboxContainer struct {
 type DockerSandbox struct {
 	// ID is the sandbox ID (used with docker sandbox rm)
 	ID string
+	// Name is the sandbox name
+	Name string
 	// Status is the sandbox status (e.g., "running", "stopped")
 	Status string
+	// Image is the sandbox image
+	Image string
 	// Workspace is the mounted workspace path
 	Workspace string
 }
@@ -586,7 +607,7 @@ func StopSandbox(workspaceDir string, remove bool) (*SandboxContainer, error) {
 
 // ListDockerSandboxes returns all Docker sandboxes from docker sandbox ls
 func ListDockerSandboxes() ([]DockerSandbox, error) {
-	cmd := exec.Command("docker", "sandbox", "ls", "--format", "{{.ID}}\t{{.Status}}\t{{.Workspace}}")
+	cmd := exec.Command("docker", "sandbox", "ls")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -598,23 +619,66 @@ func ListDockerSandboxes() ([]DockerSandbox, error) {
 		return nil, fmt.Errorf("docker sandbox ls failed: %w", err)
 	}
 
-	var sandboxes []DockerSandbox
-	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	return parseSandboxLsOutput(stdout.String())
+}
 
-	for _, line := range lines {
+// parseSandboxLsOutput parses the table output from `docker sandbox ls`.
+// The output is a fixed-width column table with headers:
+//
+//	SANDBOX ID   TEMPLATE   NAME   WORKSPACE   STATUS   CREATED
+func parseSandboxLsOutput(output string) ([]DockerSandbox, error) {
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if len(lines) < 2 {
+		return nil, nil
+	}
+
+	header := lines[0]
+
+	// Find column start positions from the header
+	type col struct {
+		name  string
+		start int
+	}
+	colNames := []string{"SANDBOX ID", "TEMPLATE", "NAME", "WORKSPACE", "STATUS", "CREATED"}
+	var cols []col
+	for _, name := range colNames {
+		idx := strings.Index(header, name)
+		if idx < 0 {
+			return nil, fmt.Errorf("docker sandbox ls: missing column %q in header: %s", name, header)
+		}
+		cols = append(cols, col{name: name, start: idx})
+	}
+
+	// Extract field from a line using column positions
+	extractField := func(line string, colIdx int) string {
+		start := cols[colIdx].start
+		if start >= len(line) {
+			return ""
+		}
+		var end int
+		if colIdx+1 < len(cols) {
+			end = cols[colIdx+1].start
+		} else {
+			end = len(line)
+		}
+		if end > len(line) {
+			end = len(line)
+		}
+		return strings.TrimSpace(line[start:end])
+	}
+
+	var sandboxes []DockerSandbox
+	for _, line := range lines[1:] {
 		if line == "" {
 			continue
 		}
 
-		parts := strings.Split(line, "\t")
-		if len(parts) < 3 {
-			continue
-		}
-
 		sandboxes = append(sandboxes, DockerSandbox{
-			ID:        parts[0],
-			Status:    parts[1],
-			Workspace: parts[2],
+			ID:        extractField(line, 0),
+			Image:     extractField(line, 1),
+			Name:      extractField(line, 2),
+			Workspace: extractField(line, 3),
+			Status:    extractField(line, 4),
 		})
 	}
 
@@ -836,6 +900,11 @@ func CheckBrokenMounts(containerID string) ([]BrokenMount, error) {
 	for _, m := range mounts {
 		// Skip volume mounts (they don't have host paths)
 		if !strings.HasPrefix(m.Source, "/") {
+			continue
+		}
+
+		// Skip Docker-internal mounts (managed by Docker itself)
+		if strings.HasPrefix(m.Source, "/var/lib/docker/") {
 			continue
 		}
 

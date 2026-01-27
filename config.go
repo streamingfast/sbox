@@ -25,6 +25,11 @@ type Config struct {
 
 	// DefaultProfiles are the default profiles to use for new projects
 	DefaultProfiles []string `yaml:"default_profiles"`
+
+	// Envs are global environment variables passed to all sandboxes
+	// Format: "NAME" (passthrough from host) or "NAME=VALUE" (explicit value)
+	// Project-specific envs override these
+	Envs []string `yaml:"envs"`
 }
 
 // ProjectConfig holds per-project configuration settings
@@ -44,6 +49,10 @@ type ProjectConfig struct {
 	// DockerSocket overrides the global docker_socket setting for this project
 	// Values: "auto", "always", "never", or empty to use global setting
 	DockerSocket string `yaml:"docker_socket"`
+
+	// Envs are environment variables to pass to the sandbox
+	// Format: "NAME" (passthrough from host) or "NAME=VALUE" (explicit value)
+	Envs []string `yaml:"envs"`
 }
 
 // SboxFileConfig represents the configuration from a .sbox file
@@ -58,6 +67,9 @@ type SboxFileConfig struct {
 
 	// DockerSocket setting override
 	DockerSocket string `yaml:"docker_socket"`
+
+	// Envs are environment variables to pass to the sandbox
+	Envs []string `yaml:"envs"`
 }
 
 // SboxFileLocation contains info about a loaded .sbox file
@@ -470,6 +482,7 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 		Profiles:     projectConfig.Profiles,
 		Volumes:      projectConfig.Volumes,
 		DockerSocket: projectConfig.DockerSocket,
+		Envs:         projectConfig.Envs,
 	}
 
 	// Merge profiles (combine both lists, removing duplicates)
@@ -505,6 +518,19 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 		merged.Volumes = append(merged.Volumes, resolvedSpec)
 	}
 
+	// Merge envs (combine, dedup by name)
+	envSet := make(map[string]bool)
+	for _, e := range merged.Envs {
+		envSet[EnvName(e)] = true
+	}
+	for _, e := range sboxConfig.Envs {
+		name := EnvName(e)
+		if !envSet[name] {
+			merged.Envs = append(merged.Envs, e)
+			envSet[name] = true
+		}
+	}
+
 	// Override docker_socket if set in .sbox file
 	if sboxConfig.DockerSocket != "" {
 		merged.DockerSocket = sboxConfig.DockerSocket
@@ -513,6 +539,7 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 	zlog.Debug("merged project config with .sbox file",
 		zap.Strings("profiles", merged.Profiles),
 		zap.Strings("volumes", merged.Volumes),
+		zap.Strings("envs", merged.Envs),
 		zap.String("docker_socket", merged.DockerSocket))
 
 	return merged, nil
@@ -608,6 +635,52 @@ func HasCredentials() bool {
 	credentialsPath := GetCredentialsPath(globalConfig)
 	_, err = os.Stat(credentialsPath)
 	return err == nil
+}
+
+// EnvName extracts the variable name from an env spec ("NAME" or "NAME=VALUE")
+func EnvName(spec string) string {
+	if i := strings.Index(spec, "="); i >= 0 {
+		return spec[:i]
+	}
+	return spec
+}
+
+// ResolvedEnv represents an environment variable with its source
+type ResolvedEnv struct {
+	// Spec is the raw spec ("NAME" or "NAME=VALUE")
+	Spec string
+	// Source indicates where this env was defined
+	Source string // "global", "project", ".sbox"
+}
+
+// MergeEnvs merges environment variables from multiple sources.
+// Later sources override earlier ones (by variable name).
+// Returns the merged list and a list of ResolvedEnv for display purposes.
+func MergeEnvs(globalEnvs, projectEnvs, sboxFileEnvs []string) (merged []string, resolved []ResolvedEnv) {
+	byName := make(map[string]ResolvedEnv)
+	var order []string
+
+	add := func(envs []string, source string) {
+		for _, e := range envs {
+			name := EnvName(e)
+			if _, exists := byName[name]; !exists {
+				order = append(order, name)
+			}
+			byName[name] = ResolvedEnv{Spec: e, Source: source}
+		}
+	}
+
+	add(globalEnvs, "global")
+	add(sboxFileEnvs, ".sbox")
+	add(projectEnvs, "project")
+
+	for _, name := range order {
+		r := byName[name]
+		merged = append(merged, r.Spec)
+		resolved = append(resolved, r)
+	}
+
+	return merged, resolved
 }
 
 // expandPath expands ~ to home directory and makes path absolute
