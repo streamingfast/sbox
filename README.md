@@ -6,11 +6,14 @@ A Docker sandbox wrapper for [Claude Code](https://claude.ai/code) that provides
 
 Running Claude Code in Docker sandbox mode provides security isolation, but loses access to your `~/.claude` configuration. **sbox** bridges this gap by:
 
-- **Sharing agents** - Your `~/.claude/agents/*.md` files are converted to JSON and passed via `--agents`
-- **Sharing plugins** - Installed plugins from `~/.claude/plugins/` are mounted and loaded via `--plugin-dir`
-- **Sharing credentials** - Persistent authentication across sandbox sessions (Missing)
-- **Concatenating CLAUDE.md** - Merges `CLAUDE.md` and `AGENTS.md` files from parent directories
-- **Profile system** - Install additional tools (Go, Rust, etc.) via custom Docker images
+- **Sharing agents** — Your `~/.claude/agents/*.md` files are converted to JSON and passed via `--agents`
+- **Sharing plugins** — Installed plugins from `~/.claude/plugins/` are mounted and loaded via `--plugin-dir`
+- **Concatenating CLAUDE.md** — Merges `CLAUDE.md` and `AGENTS.md` files from parent directories into a single file
+- **Profile system** — Install additional tools (Go, Rust, Substreams, etc.) via custom Docker images with dependency support
+- **Environment variables** — Pass host environment variables to the sandbox with global and per-project configuration
+- **Project management** — Track sandbox state, profiles, volumes, and configuration per project
+
+> **Note:** Authentication is not yet shared across sandboxes. Each sandbox session requires its own authentication. The `sbox auth` command exists but credentials sharing is still a work in progress.
 
 ## Installation
 
@@ -27,15 +30,13 @@ cd ~/projects/my-app
 # Launch Claude in sandbox
 sbox run
 
-# ... work with Claude ...
-
-# In another terminal, check status
-sbox status
+# In another terminal, check project info
+sbox info
 
 # Connect a shell to the running sandbox
 sbox shell
 
-# When done, stop and clean up
+# When done, stop and clean up the container
 sbox stop --rm
 ```
 
@@ -50,35 +51,17 @@ sbox run                      # Run in current directory
 sbox run -w /path/to/project  # Specify workspace
 sbox run --docker-socket      # Enable Docker-in-Docker
 sbox run --profile go         # Use Go profile for this session
-sbox run --recreate           # Remove existing sandbox first (for mount changes)
-```
-
-### `sbox status`
-
-Show sandbox status for the current project.
-
-```bash
-sbox status
-# Project:  my-app
-# Path:     /Users/me/projects/my-app
-# Hash:     a1b2c3d4e5f6
-# Status:   running (claude-sandbox-2026-01-19-143701)
-# Profiles: [go]
-# Command:  docker sandbox run -v ... claude --agents {...}
+sbox run --recreate           # Rebuild image and recreate sandbox
 ```
 
 ### `sbox info`
 
-List all known projects with their status.
+Show project info for the current directory, or list all known projects.
 
 ```bash
-sbox info
-# Projects:
-#   my-app (running)
-#     Path:     /Users/me/projects/my-app
-#     Profiles: [go]
-#   other-project (stopped)
-#     Path:     /Users/me/projects/other
+sbox info                     # Current project info
+sbox info --all               # List all known projects
+sbox info -w /path/to/project # Info for a specific workspace
 ```
 
 ### `sbox shell`
@@ -87,7 +70,6 @@ Open a bash shell in the running sandbox.
 
 ```bash
 sbox shell
-# agent@claude-sandbox:~/workspace$
 ```
 
 ### `sbox stop`
@@ -95,8 +77,9 @@ sbox shell
 Stop the running sandbox.
 
 ```bash
-sbox stop       # Stop container
-sbox stop --rm  # Stop and remove container + project data
+sbox stop            # Stop container
+sbox stop --rm       # Stop and remove container (keeps project config)
+sbox stop --rm --all # Stop, remove container, and delete project config
 ```
 
 ### `sbox profile`
@@ -108,6 +91,42 @@ sbox profile list              # Show available profiles
 sbox profile add go            # Add Go profile to project
 sbox profile remove go         # Remove profile from project
 ```
+
+Available profiles:
+- **go** — Go toolchain
+- **rust** — Rust toolchain (cargo, rustc, rustup)
+- **substreams** — Substreams and Firehose Core CLIs, buf, protoc (automatically includes rust)
+
+Profiles can declare dependencies on other profiles. For example, `substreams` automatically pulls in `rust`.
+
+### `sbox env`
+
+Manage environment variables passed to the sandbox. Name-only variables (e.g. `FOO`) are resolved from the host environment at launch time.
+
+```bash
+sbox env list                          # Show all vars with source labels
+sbox env add FOO=bar BAZ              # Add to current project
+sbox env add --global TOKEN SECRET    # Add to global config (all projects)
+sbox env remove FOO BAZ              # Remove from current project
+sbox env remove --global TOKEN       # Remove from global config
+```
+
+Environment variables are merged from three sources (later overrides earlier):
+1. Global config (`~/.config/sbox/config.yaml`)
+2. `.sbox` file (checked into repo)
+3. Project config (`~/.config/sbox/projects/<hash>/config.yaml`)
+
+### `sbox auth`
+
+Manage authentication for sandbox sessions.
+
+```bash
+sbox auth            # Set up authentication
+sbox auth --status   # Check authentication status
+sbox auth --logout   # Remove stored credentials
+```
+
+> **Caveat:** Authentication is not reliably shared across sandbox sessions yet. You may need to re-authenticate in each new sandbox.
 
 ### `sbox config`
 
@@ -134,11 +153,16 @@ sbox clean --all     # Remove all cached data
 ### Global Config (`~/.config/sbox/config.yaml`)
 
 ```yaml
-claude_home: ~/.claude        # Claude configuration directory
-docker_socket: auto           # auto | always | never
+claude_home: ~/.claude
+docker_socket: auto  # auto | always | never
+envs:
+  - TOKEN
+  - SECRET=default_value
 ```
 
-### Project Config (`.sbox.yaml`)
+### Project Config (`.sbox`)
+
+A `.sbox` file can be checked into your repository to share configuration with your team:
 
 ```yaml
 profiles:
@@ -147,7 +171,11 @@ profiles:
 volumes:
   - ~/data:/mnt/data:ro
 docker_socket: always
+envs:
+  - API_KEY
 ```
+
+Per-project config is also stored at `~/.config/sbox/projects/<hash>/config.yaml` for settings managed via CLI commands.
 
 ## How It Works
 
@@ -177,10 +205,16 @@ sbox walks up from your workspace directory, collecting all `CLAUDE.md` and `AGE
 Profiles extend the base Claude sandbox image with additional tools:
 
 ```bash
-sbox run --profile go  # Builds image with Go toolchain installed
+sbox profile add go    # Adds Go profile to this project
+sbox run               # Builds custom image with Go installed, then launches sandbox
+sbox run --recreate    # Rebuilds image and recreates sandbox (after profile changes)
 ```
 
-Custom profiles can be defined in `~/.config/sbox/profiles/`.
+Profiles support dependencies — adding `substreams` automatically includes `rust`. Custom profiles can be defined in `~/.config/sbox/profiles/`.
+
+### Environment Variables
+
+Environment variables configured via `sbox env` are resolved at sandbox launch time. Name-only entries (e.g. `FOO`) are resolved from the current host environment. If a host variable is not set, it is skipped.
 
 ## License
 
