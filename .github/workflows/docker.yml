@@ -5,6 +5,7 @@ on:
     tags:
       - "v*"
     branches:
+      - "master"
       - "develop"
       - "feature/*"
       - "fix/*"
@@ -62,13 +63,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=tag
             type=ref,event=tag,suffix=-${{ matrix.platform_suffix }}
-            type=sha,prefix=
             type=sha,prefix=,suffix=-${{ matrix.platform_suffix }}
-            type=raw,enable=${{ github.ref == 'refs/heads/develop' }},value=develop
-          flavor: |
-            latest=${{ startsWith(github.ref, 'refs/tags/') }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -110,6 +106,7 @@ jobs:
           tags: |
             type=ref,event=tag
             type=sha,prefix=
+            type=raw,enable=${{ github.ref == 'refs/heads/master' }},value=master
             type=raw,enable=${{ github.ref == 'refs/heads/develop' }},value=develop
           flavor: |
             latest=${{ startsWith(github.ref, 'refs/tags/') }}
@@ -118,7 +115,19 @@ jobs:
       - name: Extract image
         id: image
         run: |
-          echo "ID=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          base="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          # Prefer tag-suffixed images when this is a tag push, fall back to sha-suffixed.
+          # This avoids a race when a branch push and a tag push happen concurrently for
+          # the same commit: the build job tags images with both <tag>-<arch> and <sha>-<arch>,
+          # but only the variant matching the trigger's ref is guaranteed to exist when
+          # the push job runs.
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            echo "ID=${base}:${tag}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ID=${base}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create and push manifest images
         uses: Noelware/docker-manifest-action@0.4.3
