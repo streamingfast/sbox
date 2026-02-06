@@ -6,10 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"go.uber.org/zap"
 )
+
+// DefaultTemplateImage is the default Docker sandbox template image for Claude
+const DefaultTemplateImage = "docker/sandbox-templates:claude-code"
 
 // SandboxOptions holds options for running the Docker sandbox
 type SandboxOptions struct {
@@ -25,11 +29,17 @@ type SandboxOptions struct {
 	// ForceRebuild forces rebuilding the custom template image
 	ForceRebuild bool
 
+	// Debug enables debug mode for docker sandbox commands
+	Debug bool
+
 	// Config is the global configuration
 	Config *Config
 
 	// ProjectConfig is the per-project configuration
 	ProjectConfig *ProjectConfig
+
+	// SboxFile is the loaded sbox.yaml file configuration (if any)
+	SboxFile *SboxFileLocation
 }
 
 // BuildDockerCommand builds the docker sandbox command arguments without executing.
@@ -39,16 +49,96 @@ func BuildDockerCommand(opts SandboxOptions) ([]string, error) {
 	return buildDockerArgs(opts, false)
 }
 
-// RunSandbox executes the Docker sandbox with all configured mounts and settings
+// RunSandbox executes the Docker sandbox with all configured mounts and settings.
+// If the sandbox doesn't exist, it creates it first using `docker sandbox create`.
+// Then runs the sandbox using `docker sandbox run <name>`.
 func RunSandbox(opts SandboxOptions) error {
-	args, err := buildDockerArgs(opts, true)
-	if err != nil {
-		return err
+	// Get sandbox name (should already be set by caller)
+	sandboxName := opts.ProjectConfig.SandboxName
+	if sandboxName == "" {
+		var err error
+		sandboxName, err = GenerateSandboxName(opts.WorkspaceDir)
+		if err != nil {
+			return fmt.Errorf("failed to generate sandbox name: %w", err)
+		}
+		opts.ProjectConfig.SandboxName = sandboxName
 	}
+
+	// Merge project profiles with command-line profiles
+	allProfiles := mergeProfiles(opts.ProjectConfig.Profiles, opts.Profiles)
+
+	zlog.Info("preparing to run Docker sandbox",
+		zap.String("name", sandboxName),
+		zap.String("workspace", opts.WorkspaceDir),
+		zap.Strings("profiles", allProfiles))
+
+	// Prepare .sbox directory with plugins, agents, and env vars
+	// This happens every time since host config may have changed
+	var sboxFileEnvs []string
+	if opts.SboxFile != nil && opts.SboxFile.Config != nil {
+		sboxFileEnvs = opts.SboxFile.Config.Envs
+	}
+	if err := PrepareSboxDirectory(opts.WorkspaceDir, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs); err != nil {
+		return fmt.Errorf("failed to prepare .sbox directory: %w", err)
+	}
+
+	// Check if sandbox exists
+	existingSandbox, err := FindDockerSandboxByName(sandboxName)
+	if err != nil {
+		zlog.Debug("failed to check for existing sandbox", zap.Error(err))
+	}
+
+	// Create sandbox if it doesn't exist
+	if existingSandbox == nil {
+		// Build custom template only when creating a new sandbox
+		// Template is now always required for sbox entrypoint
+		builder := NewTemplateBuilder(opts.Config, allProfiles)
+		templateImage, err := builder.Build(opts.ForceRebuild)
+		if err != nil {
+			return fmt.Errorf("failed to build custom template: %w", err)
+		}
+
+		fmt.Printf("Creating sandbox '%s'...\n", sandboxName)
+		zlog.Info("sandbox does not exist, creating",
+			zap.String("name", sandboxName),
+			zap.String("workspace", opts.WorkspaceDir),
+			zap.String("template", templateImage))
+
+		if err := CreateDockerSandbox(sandboxName, opts.WorkspaceDir, templateImage, opts.Debug); err != nil {
+			// Check if the error is "already exists" - this can happen if our sandbox
+			// lookup failed but the sandbox actually exists
+			if strings.Contains(err.Error(), "already exists") {
+				zlog.Info("sandbox already exists (detected from create error)",
+					zap.String("name", sandboxName))
+				fmt.Printf("Sandbox '%s' already exists\n", sandboxName)
+			} else {
+				return fmt.Errorf("failed to create sandbox: %w", err)
+			}
+		} else {
+			fmt.Printf("Sandbox '%s' created\n", sandboxName)
+		}
+	} else {
+		fmt.Printf("Using existing sandbox '%s'\n", sandboxName)
+		zlog.Info("sandbox already exists",
+			zap.String("name", sandboxName),
+			zap.String("sandbox_id", existingSandbox.ID),
+			zap.String("status", existingSandbox.Status))
+	}
+
+	// Build run command: docker sandbox [--debug] run <name>
+	// Note: Extra args are not supported for existing sandboxes
+	args := []string{"sandbox"}
+	if opts.Debug {
+		args = append(args, "--debug")
+	}
+	args = append(args, "run", sandboxName)
 
 	zlog.Debug("executing docker command",
 		zap.String("cmd", "docker"),
-		zap.Strings("args", args))
+		zap.Strings("args", args),
+		zap.Bool("debug", opts.Debug))
+
+	fmt.Printf("Starting sandbox '%s'...\n", sandboxName)
 
 	// Execute docker sandbox run
 	cmd := exec.Command("docker", args...)
@@ -64,19 +154,31 @@ func RunSandbox(opts SandboxOptions) error {
 	return nil
 }
 
-// buildDockerArgs builds the docker sandbox command arguments.
-// If buildTemplate is true, it will actually build the template image if needed.
-// If buildTemplate is false, it will only compute the image name without building.
+// buildDockerArgs builds the docker sandbox command arguments for display purposes.
+// This is used by BuildDockerCommand to show what command would be run.
+// The actual execution uses RunSandbox which handles create/run separately.
 func buildDockerArgs(opts SandboxOptions, buildTemplate bool) ([]string, error) {
+	// Generate sandbox name
+	sandboxName := opts.ProjectConfig.SandboxName
+	if sandboxName == "" {
+		var err error
+		sandboxName, err = GenerateSandboxName(opts.WorkspaceDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate sandbox name: %w", err)
+		}
+	}
+
+	// Check if sandbox exists to determine which command to show
+	existingSandbox, _ := FindDockerSandboxByName(sandboxName)
+
+	if existingSandbox != nil {
+		// Sandbox exists - show simple run command
+		return []string{"sandbox", "run", sandboxName}, nil
+	}
+
+	// Sandbox doesn't exist - show create command that would be used
 	// Merge project profiles with command-line profiles
 	allProfiles := mergeProfiles(opts.ProjectConfig.Profiles, opts.Profiles)
-
-	if buildTemplate {
-		zlog.Info("preparing to run Docker sandbox",
-			zap.String("workspace", opts.WorkspaceDir),
-			zap.Bool("mount_docker_socket", opts.MountDockerSocket),
-			zap.Strings("profiles", allProfiles))
-	}
 
 	// Build custom template if profiles are specified
 	var templateImage string
@@ -93,66 +195,18 @@ func buildDockerArgs(opts SandboxOptions, buildTemplate bool) ([]string, error) 
 		}
 	}
 
-	// Prepare concatenated CLAUDE.md file
-	claudeMDPath, err := PrepareMDForSandbox(opts.WorkspaceDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to prepare CLAUDE.md: %w", err)
+	// Build create command args
+	args := []string{"sandbox", "create", "--name", sandboxName}
+
+	// Add custom template if we have one and it's different from default
+	if templateImage != "" && templateImage != DefaultTemplateImage {
+		// --load-local-template is required for locally built images
+		args = append(args, "--load-local-template", "--template", templateImage)
 	}
 
-	// Build Claude CLI flags (agents, plugins, etc.)
-	claudeFlags, err := BuildClaudeFlags(opts.Config.ClaudeHome)
-	if err != nil {
-		if buildTemplate {
-			zlog.Warn("failed to build Claude flags, continuing without them", zap.Error(err))
-		}
-		claudeFlags = &ClaudeFlags{}
-	}
-
-	// Build volume mount arguments
-	volumeMounts, err := buildVolumeMounts(opts, claudeMDPath, claudeFlags)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build volume mounts: %w", err)
-	}
-
-	// Build docker command
-	args := []string{"sandbox", "run"}
-
-	// Add custom template if we have one
-	if templateImage != "" && templateImage != "docker/sandbox-templates:claude-code" {
-		args = append(args, "--template", templateImage)
-	}
-
-	// Add Docker socket flag if needed
-	if shouldMountDockerSocket(opts.Config, opts.ProjectConfig, opts.MountDockerSocket) {
-		args = append(args, "--mount-docker-socket")
-	}
-
-	// Add environment variables (global merged with project, project overrides global).
-	// Docker sandbox doesn't support -e NAME passthrough, so we resolve name-only
-	// entries from the host environment into NAME=VALUE form.
-	mergedEnvs, _ := MergeEnvs(opts.Config.Envs, opts.ProjectConfig.Envs, nil)
-	for _, env := range mergedEnvs {
-		if !strings.Contains(env, "=") {
-			// Name-only: resolve from host
-			val, ok := os.LookupEnv(env)
-			if !ok {
-				zlog.Debug("skipping unset env var", zap.String("name", env))
-				continue
-			}
-			env = env + "=" + val
-		}
-		args = append(args, "-e", env)
-	}
-
-	// Add volume mounts
-	args = append(args, volumeMounts...)
-
-	// Add the Claude image and CLI flags
-	args = append(args, "claude")
-
-	// Add Claude CLI flags after the image name
-	claudeArgs := buildClaudeCLIArgs(claudeFlags)
-	args = append(args, claudeArgs...)
+	// Add the Claude agent and workspace path
+	absPath, _ := filepath.Abs(opts.WorkspaceDir)
+	args = append(args, "claude", absPath)
 
 	return args, nil
 }
@@ -201,18 +255,9 @@ func buildVolumeMounts(opts SandboxOptions, claudeMDPath string, claudeFlags *Cl
 		claudeFlags.PluginDirs = append(claudeFlags.PluginDirs, pluginPaths.ContainerPaths...)
 	}
 
-	// Mount concatenated CLAUDE.md
-	mounts = append(mounts, "-v", fmt.Sprintf("%s:/home/agent/.claude/CLAUDE.md:ro", claudeMDPath))
-	zlog.Debug("mounting concatenated CLAUDE.md", zap.String("path", claudeMDPath))
-
-	// Mount sbox credentials file if it exists (for persistent auth)
-	credentialsPath := GetCredentialsPath(opts.Config)
-	if _, err := os.Stat(credentialsPath); err == nil {
-		mounts = append(mounts, "-v", fmt.Sprintf("%s:/home/agent/.claude/.credentials.json", credentialsPath))
-		zlog.Debug("mounting credentials file", zap.String("path", credentialsPath))
-	} else {
-		zlog.Debug("credentials file not found, skipping", zap.String("path", credentialsPath))
-	}
+	// NOTE: CLAUDE.md is now copied to .sbox/ and installed by the entrypoint
+	// Volume mounts don't work with Docker sandbox MicroVMs
+	_ = claudeMDPath // Unused, kept for backwards compatibility in function signature
 
 	// Mount ~/.claude/settings.json if it exists (MCP server configuration)
 	settingsPath := filepath.Join(opts.Config.ClaudeHome, "settings.json")
@@ -278,51 +323,13 @@ func buildVolumeMounts(opts SandboxOptions, claudeMDPath string, claudeFlags *Cl
 	return mounts, nil
 }
 
-// shouldMountDockerSocket determines whether to mount the Docker socket
-// based on configuration, project config, and explicit flag
+// shouldMountDockerSocket is deprecated - Docker is automatically available in MicroVM sandboxes.
+// This function is kept for backwards compatibility but always returns false.
+// The docker_socket config setting is ignored.
 func shouldMountDockerSocket(config *Config, projectConfig *ProjectConfig, explicit bool) bool {
-	// Explicit flag takes precedence
-	if explicit {
-		zlog.Debug("mounting Docker socket: explicit flag set")
-		return true
-	}
-
-	// Project config override takes next precedence
-	if projectConfig != nil && projectConfig.DockerSocket != "" {
-		switch projectConfig.DockerSocket {
-		case "always":
-			zlog.Debug("mounting Docker socket: project config set to 'always'")
-			return true
-		case "never":
-			zlog.Debug("not mounting Docker socket: project config set to 'never'")
-			return false
-		case "auto":
-			zlog.Debug("docker socket setting: project config set to 'auto', using global config")
-			// Fall through to global config
-		default:
-			zlog.Debug("unknown project docker_socket setting, using global config",
-				zap.String("docker_socket", projectConfig.DockerSocket))
-		}
-	}
-
-	// Check global config setting
-	switch config.DockerSocket {
-	case "always":
-		zlog.Debug("mounting Docker socket: global config set to 'always'")
-		return true
-	case "never":
-		zlog.Debug("not mounting Docker socket: global config set to 'never'")
-		return false
-	case "auto":
-		// Default to mounting for convenience
-		zlog.Debug("mounting Docker socket: global config set to 'auto' (default)")
-		return true
-	default:
-		// Unknown setting, default to auto behavior
-		zlog.Debug("mounting Docker socket: unknown global config setting, defaulting to 'auto'",
-			zap.String("docker_socket", config.DockerSocket))
-		return true
-	}
+	// With MicroVM sandboxes, Docker is automatically available inside the sandbox
+	// with its own daemon. No explicit mounting is needed.
+	return false
 }
 
 // GetSandboxContainerName returns the expected container name for a project's sandbox.
@@ -389,125 +396,36 @@ type VolumeMount struct {
 	ReadOnly    bool
 }
 
-// FindRunningSandbox finds a running Docker sandbox container for the given workspace.
-// Returns container info if found, nil if not running.
+// FindRunningSandbox finds a running Docker sandbox for the given workspace.
+// Returns sandbox info if found and running, nil if not running.
+// Note: With Docker Sandbox MicroVMs, sandboxes don't appear in `docker ps`.
+// We use `docker sandbox ls` instead.
 func FindRunningSandbox(workspaceDir string) (*SandboxContainer, error) {
-	absPath, err := filepath.Abs(workspaceDir)
+	sandbox, err := FindDockerSandbox(workspaceDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path: %w", err)
+		return nil, err
 	}
 
-	// Try to resolve symlinks to get the real path for comparison
-	realPath, err := filepath.EvalSymlinks(absPath)
-	if err != nil {
-		// If symlink resolution fails, just use the absolute path
-		realPath = absPath
+	if sandbox == nil {
+		return nil, nil
 	}
 
-	zlog.Debug("looking for sandbox container",
-		zap.String("workspace", absPath),
-		zap.String("real_path", realPath))
-
-	// Try docker ps
-	cmd := exec.Command("docker", "ps", "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		zlog.Debug("docker ps command failed",
-			zap.Error(err),
-			zap.String("stderr", stderr.String()))
-		return nil, nil // No containers found or docker not accessible
+	// Only return if the sandbox is running
+	if sandbox.Status != "running" {
+		zlog.Debug("sandbox found but not running",
+			zap.String("sandbox_id", sandbox.ID),
+			zap.String("status", sandbox.Status))
+		return nil, nil
 	}
 
-	output := stdout.String()
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-
-		parts := strings.Split(line, "\t")
-		if len(parts) < 2 {
-			continue
-		}
-
-		containerID := parts[0]
-		containerName := parts[1]
-		imageName := ""
-		if len(parts) > 2 {
-			imageName = parts[2]
-		}
-
-		// Skip containers that aren't sandbox-related
-		// Check for sandbox-related image or container name
-		isSandbox := strings.Contains(imageName, "sandbox") ||
-			strings.Contains(imageName, "claude") ||
-			strings.Contains(containerName, "sandbox") ||
-			strings.Contains(containerName, "claude") ||
-			strings.Contains(imageName, "sbox-template")
-		if !isSandbox {
-			continue
-		}
-
-		// Check if this container has the workspace mounted
-		inspectCmd := exec.Command("docker", "inspect", containerID, "--format", "{{range .Mounts}}{{.Source}}|{{.Destination}}\n{{end}}")
-		var inspectOut bytes.Buffer
-		inspectCmd.Stdout = &inspectOut
-
-		if err := inspectCmd.Run(); err != nil {
-			zlog.Debug("failed to inspect container",
-				zap.String("container_id", containerID),
-				zap.Error(err))
-			continue
-		}
-
-		mounts := inspectOut.String()
-		mountLines := strings.Split(strings.TrimSpace(mounts), "\n")
-
-		for _, mountLine := range mountLines {
-			if mountLine == "" {
-				continue
-			}
-
-			mountParts := strings.Split(mountLine, "|")
-			if len(mountParts) != 2 {
-				continue
-			}
-
-			source := mountParts[0]
-			// Also resolve symlinks in mount source for comparison
-			sourceReal, err := filepath.EvalSymlinks(source)
-			if err != nil {
-				sourceReal = source
-			}
-
-			// Check if the workspace path matches (either exact or real path)
-			if source == absPath || source == realPath ||
-				sourceReal == absPath || sourceReal == realPath {
-				zlog.Debug("found sandbox container for workspace",
-					zap.String("container_id", containerID),
-					zap.String("container_name", containerName),
-					zap.String("workspace", absPath),
-					zap.String("mount_source", source))
-				return &SandboxContainer{
-					ID:    containerID,
-					Name:  containerName,
-					Image: imageName,
-				}, nil
-			}
-		}
-	}
-
-	zlog.Debug("no running sandbox found for workspace",
-		zap.String("workspace", absPath),
-		zap.String("real_path", realPath))
-	return nil, nil
+	return &SandboxContainer{
+		ID:    sandbox.ID,
+		Name:  sandbox.Name,
+		Image: sandbox.Image,
+	}, nil
 }
 
-// ConnectShell connects to a running sandbox container's bash shell.
+// ConnectShell connects to a running sandbox's bash shell.
 // Returns an error if no sandbox is running for the given workspace.
 func ConnectShell(workspaceDir string) error {
 	// Check if we're already inside a sandbox
@@ -520,89 +438,90 @@ func ConnectShell(workspaceDir string) error {
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	container, err := FindRunningSandbox(absPath)
+	sandbox, err := FindRunningSandbox(absPath)
 	if err != nil {
 		return fmt.Errorf("failed to find running sandbox: %w", err)
 	}
 
-	if container == nil {
-		return fmt.Errorf("no sandbox container is running for workspace: %s\nStart a sandbox first with: sbox run", absPath)
+	if sandbox == nil {
+		return fmt.Errorf("no sandbox is running for workspace: %s\nStart a sandbox first with: sbox run", absPath)
 	}
 
 	zlog.Info("connecting to sandbox shell",
-		zap.String("container_id", container.ID),
-		zap.String("container_name", container.Name),
+		zap.String("sandbox_id", sandbox.ID),
+		zap.String("sandbox_name", sandbox.Name),
 		zap.String("workspace", absPath))
 
-	// Execute docker exec -it <container> bash
-	cmd := exec.Command("docker", "exec", "-it", container.ID, "bash")
+	// Execute docker sandbox exec -it <sandbox> bash
+	cmd := exec.Command("docker", "sandbox", "exec", "-it", sandbox.ID, "bash")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker exec failed: %w", err)
+		return fmt.Errorf("docker sandbox exec failed: %w", err)
 	}
 
 	return nil
 }
 
-// StopSandbox stops the running Docker sandbox container for the given workspace.
-// If remove is true, the container is also removed after stopping.
-// Returns the stopped container info, or nil if no container was running.
+// StopSandbox stops the running Docker sandbox for the given workspace.
+// If remove is true, the sandbox is also removed after stopping.
+// Returns the stopped sandbox info, or nil if no sandbox was running.
 func StopSandbox(workspaceDir string, remove bool) (*SandboxContainer, error) {
 	absPath, err := filepath.Abs(workspaceDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	container, err := FindRunningSandbox(absPath)
+	// First check if there's a running sandbox
+	sandbox, err := FindRunningSandbox(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find running sandbox: %w", err)
 	}
 
-	if container == nil {
+	if sandbox == nil {
 		zlog.Debug("no running sandbox to stop", zap.String("workspace", absPath))
 		return nil, nil
 	}
 
-	zlog.Info("stopping sandbox container",
-		zap.String("container_id", container.ID),
-		zap.String("container_name", container.Name),
+	zlog.Info("stopping sandbox",
+		zap.String("sandbox_id", sandbox.ID),
+		zap.String("sandbox_name", sandbox.Name),
 		zap.String("workspace", absPath))
 
-	// Stop the container
-	stopCmd := exec.Command("docker", "stop", container.ID)
+	// Stop the sandbox using docker sandbox stop
+	stopCmd := exec.Command("docker", "sandbox", "stop", sandbox.ID)
 	var stderr bytes.Buffer
 	stopCmd.Stderr = &stderr
 
 	if err := stopCmd.Run(); err != nil {
-		return nil, fmt.Errorf("docker stop failed: %w (stderr: %s)", err, stderr.String())
+		return nil, fmt.Errorf("docker sandbox stop failed: %w (stderr: %s)", err, stderr.String())
 	}
 
-	zlog.Info("sandbox container stopped",
-		zap.String("container_id", container.ID),
-		zap.String("container_name", container.Name))
+	zlog.Info("sandbox stopped",
+		zap.String("sandbox_id", sandbox.ID),
+		zap.String("sandbox_name", sandbox.Name))
 
-	// Remove the container if requested
+	// Remove the sandbox if requested using docker sandbox rm
 	if remove {
-		zlog.Info("removing sandbox container",
-			zap.String("container_id", container.ID),
-			zap.String("container_name", container.Name))
+		zlog.Info("removing sandbox",
+			zap.String("sandbox_id", sandbox.ID),
+			zap.String("sandbox_name", sandbox.Name))
 
-		rmCmd := exec.Command("docker", "rm", container.ID)
+		rmCmd := exec.Command("docker", "sandbox", "rm", sandbox.ID)
 		rmCmd.Stderr = &stderr
 
 		if err := rmCmd.Run(); err != nil {
-			return nil, fmt.Errorf("docker rm failed: %w (stderr: %s)", err, stderr.String())
+			return nil, fmt.Errorf("docker sandbox rm failed: %w (stderr: %s)", err, stderr.String())
 		}
 
-		zlog.Info("sandbox container removed",
-			zap.String("container_id", container.ID),
-			zap.String("container_name", container.Name))
+		zlog.Info("sandbox removed",
+			zap.String("sandbox_id", sandbox.ID),
+			zap.String("sandbox_name", sandbox.Name))
 	}
 
-	return container, nil
+	return sandbox, nil
 }
 
 // ListDockerSandboxes returns all Docker sandboxes from docker sandbox ls
@@ -625,7 +544,7 @@ func ListDockerSandboxes() ([]DockerSandbox, error) {
 // parseSandboxLsOutput parses the table output from `docker sandbox ls`.
 // The output is a fixed-width column table with headers:
 //
-//	SANDBOX ID   TEMPLATE   NAME   WORKSPACE   STATUS   CREATED
+//	SANDBOX   AGENT   STATUS   WORKSPACE
 func parseSandboxLsOutput(output string) ([]DockerSandbox, error) {
 	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
 	if len(lines) < 2 {
@@ -639,7 +558,7 @@ func parseSandboxLsOutput(output string) ([]DockerSandbox, error) {
 		name  string
 		start int
 	}
-	colNames := []string{"SANDBOX ID", "TEMPLATE", "NAME", "WORKSPACE", "STATUS", "CREATED"}
+	colNames := []string{"SANDBOX", "AGENT", "STATUS", "WORKSPACE"}
 	var cols []col
 	for _, name := range colNames {
 		idx := strings.Index(header, name)
@@ -673,19 +592,121 @@ func parseSandboxLsOutput(output string) ([]DockerSandbox, error) {
 			continue
 		}
 
+		name := extractField(line, 0)
+		workspace := extractField(line, 3)
+		// "-" means no workspace
+		if workspace == "-" {
+			workspace = ""
+		}
+
 		sandboxes = append(sandboxes, DockerSandbox{
-			ID:        extractField(line, 0),
-			Image:     extractField(line, 1),
-			Name:      extractField(line, 2),
-			Workspace: extractField(line, 3),
-			Status:    extractField(line, 4),
+			ID:        name, // In new format, sandbox name is the ID
+			Name:      name,
+			Image:     extractField(line, 1), // AGENT column
+			Status:    extractField(line, 2),
+			Workspace: workspace,
 		})
 	}
 
 	return sandboxes, nil
 }
 
+// GenerateSandboxName generates a sandbox name from a workspace path.
+// Format: sbox-claude-<basename of workspace>
+// The name is sanitized to only contain letters, numbers, hyphens, and underscores.
+func GenerateSandboxName(workspaceDir string) (string, error) {
+	absPath, err := filepath.Abs(workspaceDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	basename := filepath.Base(absPath)
+
+	// Sanitize: keep only letters, numbers, hyphens, and underscores
+	reg := regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+	sanitized := reg.ReplaceAllString(basename, "-")
+
+	// Remove consecutive hyphens
+	for strings.Contains(sanitized, "--") {
+		sanitized = strings.ReplaceAll(sanitized, "--", "-")
+	}
+
+	// Trim leading/trailing hyphens
+	sanitized = strings.Trim(sanitized, "-")
+
+	if sanitized == "" {
+		sanitized = "workspace"
+	}
+
+	return "sbox-claude-" + sanitized, nil
+}
+
+// FindDockerSandboxByName finds a Docker sandbox by its name.
+// Returns the sandbox if found, nil otherwise.
+func FindDockerSandboxByName(name string) (*DockerSandbox, error) {
+	sandboxes, err := ListDockerSandboxes()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, sb := range sandboxes {
+		if sb.Name == name {
+			zlog.Debug("found docker sandbox by name",
+				zap.String("sandbox_name", name),
+				zap.String("sandbox_id", sb.ID))
+			return &sb, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// CreateDockerSandbox creates a new Docker sandbox with the given name and options.
+// Uses `docker sandbox create` command.
+func CreateDockerSandbox(name string, workspaceDir string, templateImage string, debug bool) error {
+	absPath, err := filepath.Abs(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// Build create command: docker sandbox [--debug] create --name <name> [--load-local-template] [--template <image>] claude <workspace>
+	args := []string{"sandbox"}
+	if debug {
+		args = append(args, "--debug")
+	}
+	args = append(args, "create", "--name", name)
+
+	// Add custom template if specified and different from default
+	if templateImage != "" && templateImage != DefaultTemplateImage {
+		// --load-local-template is required for locally built images
+		args = append(args, "--load-local-template", "--template", templateImage)
+	}
+
+	// Add the agent and workspace
+	args = append(args, "claude", absPath)
+
+	zlog.Info("creating docker sandbox",
+		zap.String("name", name),
+		zap.String("workspace", absPath),
+		zap.String("template", templateImage),
+		zap.Bool("debug", debug),
+		zap.Strings("args", args))
+
+	cmd := exec.Command("docker", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker sandbox create failed: %w", err)
+	}
+
+	zlog.Info("docker sandbox created",
+		zap.String("name", name))
+	return nil
+}
+
 // FindDockerSandbox finds a Docker sandbox for the given workspace directory.
+// First tries to find by sandbox name (if stored in project config), then by workspace path.
 // Returns the sandbox if found, nil otherwise.
 func FindDockerSandbox(workspaceDir string) (*DockerSandbox, error) {
 	absPath, err := filepath.Abs(workspaceDir)
@@ -704,6 +725,19 @@ func FindDockerSandbox(workspaceDir string) (*DockerSandbox, error) {
 		return nil, err
 	}
 
+	// First, try to find by the expected sandbox name
+	expectedName, _ := GenerateSandboxName(workspaceDir)
+	for _, sb := range sandboxes {
+		if sb.Name == expectedName {
+			zlog.Debug("found docker sandbox by name",
+				zap.String("sandbox_id", sb.ID),
+				zap.String("sandbox_name", expectedName),
+				zap.String("workspace", absPath))
+			return &sb, nil
+		}
+	}
+
+	// Fall back to matching by workspace path
 	for _, sb := range sandboxes {
 		// Resolve symlinks in sandbox workspace for comparison
 		sbReal, err := filepath.EvalSymlinks(sb.Workspace)
@@ -742,37 +776,34 @@ func RemoveDockerSandbox(sandboxID string) error {
 	return nil
 }
 
-// GetSandboxMounts retrieves the current volume mounts for a running sandbox container.
-func GetSandboxMounts(containerID string) ([]VolumeMount, error) {
-	cmd := exec.Command("docker", "inspect", containerID, "--format", "{{range .Mounts}}{{.Source}}|{{.Destination}}|{{.RW}}\n{{end}}")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
+// RemoveDockerSandboxByName removes a Docker sandbox by name using docker sandbox rm.
+// This is useful when the sandbox lookup fails but we know the name.
+func RemoveDockerSandboxByName(name string) error {
+	zlog.Info("removing docker sandbox by name",
+		zap.String("name", name))
+
+	cmd := exec.Command("docker", "sandbox", "rm", name)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("docker inspect failed: %w", err)
+		return fmt.Errorf("docker sandbox rm failed: %w (stderr: %s)", err, stderr.String())
 	}
 
-	var mounts []VolumeMount
-	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	zlog.Info("docker sandbox removed",
+		zap.String("name", name))
+	return nil
+}
 
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-
-		parts := strings.Split(line, "|")
-		if len(parts) != 3 {
-			continue
-		}
-
-		mounts = append(mounts, VolumeMount{
-			Source:      parts[0],
-			Destination: parts[1],
-			ReadOnly:    parts[2] == "false",
-		})
-	}
-
-	return mounts, nil
+// GetSandboxMounts retrieves the current volume mounts for a running sandbox.
+// Note: With MicroVM sandboxes, mount introspection is not available via docker inspect.
+// This function returns nil as mount checking is not supported for MicroVM sandboxes.
+func GetSandboxMounts(sandboxID string) ([]VolumeMount, error) {
+	// MicroVM sandboxes don't support docker inspect for mount introspection.
+	// Return nil to indicate no mounts can be retrieved.
+	zlog.Debug("mount introspection not supported for MicroVM sandboxes",
+		zap.String("sandbox_id", sandboxID))
+	return nil, nil
 }
 
 // GetExpectedMounts returns the volume mounts that would be configured for a new sandbox.
@@ -843,107 +874,24 @@ type BrokenMount struct {
 }
 
 // CheckMountMismatch compares expected mounts with actual sandbox mounts.
-// Returns nil if there's no significant mismatch.
-func CheckMountMismatch(containerID string, expectedMounts []VolumeMount) (*MountMismatch, error) {
-	actualMounts, err := GetSandboxMounts(containerID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Build a map of actual mounts by destination
-	actualByDest := make(map[string]VolumeMount)
-	for _, m := range actualMounts {
-		actualByDest[m.Destination] = m
-	}
-
-	var missing []VolumeMount
-	for _, expected := range expectedMounts {
-		actual, exists := actualByDest[expected.Destination]
-		if !exists {
-			missing = append(missing, expected)
-			continue
-		}
-
-		// Also check if source path differs (symlink resolved comparison)
-		expectedReal, _ := filepath.EvalSymlinks(expected.Source)
-		actualReal, _ := filepath.EvalSymlinks(actual.Source)
-		if expectedReal == "" {
-			expectedReal = expected.Source
-		}
-		if actualReal == "" {
-			actualReal = actual.Source
-		}
-
-		if expected.Source != actual.Source && expectedReal != actualReal {
-			missing = append(missing, expected)
-		}
-	}
-
-	if len(missing) == 0 {
-		return nil, nil
-	}
-
-	return &MountMismatch{
-		Missing: missing,
-	}, nil
+// Note: With MicroVM sandboxes, mount introspection is not available.
+// This function returns nil as mount mismatch checking is not supported for MicroVM sandboxes.
+func CheckMountMismatch(sandboxID string, expectedMounts []VolumeMount) (*MountMismatch, error) {
+	// MicroVM sandboxes don't support mount introspection via docker inspect.
+	// Return nil to indicate no mismatch can be detected.
+	zlog.Debug("mount mismatch checking not supported for MicroVM sandboxes",
+		zap.String("sandbox_id", sandboxID))
+	return nil, nil
 }
 
 // CheckBrokenMounts checks if any of the sandbox's configured mounts have source paths
-// that no longer exist or are broken symlinks. This can prevent the sandbox from starting.
-func CheckBrokenMounts(containerID string) ([]BrokenMount, error) {
-	mounts, err := GetSandboxMounts(containerID)
-	if err != nil {
-		return nil, err
-	}
-
-	var broken []BrokenMount
-	for _, m := range mounts {
-		// Skip volume mounts (they don't have host paths)
-		if !strings.HasPrefix(m.Source, "/") {
-			continue
-		}
-
-		// Skip Docker-internal mounts (managed by Docker itself)
-		if strings.HasPrefix(m.Source, "/var/lib/docker/") {
-			continue
-		}
-
-		// Check if the source path exists
-		info, err := os.Lstat(m.Source)
-		if err != nil {
-			if os.IsNotExist(err) {
-				broken = append(broken, BrokenMount{
-					VolumeMount: m,
-					Reason:      "source path does not exist",
-				})
-			} else {
-				broken = append(broken, BrokenMount{
-					VolumeMount: m,
-					Reason:      fmt.Sprintf("cannot access source path: %v", err),
-				})
-			}
-			continue
-		}
-
-		// If it's a symlink, check if the target exists
-		if info.Mode()&os.ModeSymlink != 0 {
-			target, err := filepath.EvalSymlinks(m.Source)
-			if err != nil {
-				broken = append(broken, BrokenMount{
-					VolumeMount: m,
-					Reason:      fmt.Sprintf("broken symlink: %v", err),
-				})
-				continue
-			}
-			// Verify the resolved target exists
-			if _, err := os.Stat(target); err != nil {
-				broken = append(broken, BrokenMount{
-					VolumeMount: m,
-					Reason:      fmt.Sprintf("symlink target does not exist: %s", target),
-				})
-			}
-		}
-	}
-
-	return broken, nil
+// that no longer exist or are broken symlinks.
+// Note: With MicroVM sandboxes, mount introspection is not available.
+// This function returns nil as broken mount checking is not supported for MicroVM sandboxes.
+func CheckBrokenMounts(sandboxID string) ([]BrokenMount, error) {
+	// MicroVM sandboxes don't support mount introspection via docker inspect.
+	// Return nil to indicate no broken mounts can be detected.
+	zlog.Debug("broken mount checking not supported for MicroVM sandboxes",
+		zap.String("sandbox_id", sandboxID))
+	return nil, nil
 }

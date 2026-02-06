@@ -38,12 +38,16 @@ type ProjectConfig struct {
 	// This is stored to allow listing projects by path
 	WorkspacePath string `yaml:"workspace_path"`
 
+	// SandboxName is the name used for the docker sandbox
+	// Format: "sbox-claude-<basename of workspace>"
+	SandboxName string `yaml:"sandbox_name"`
+
 	// Profiles are the active profiles for this project
 	Profiles []string `yaml:"profiles"`
 
 	// Volumes are additional volumes to mount in the sandbox
 	// Format: "hostpath:sandboxpath[:ro]"
-	// Paths starting with ./ or ../ are relative to the .sbox file location
+	// Paths starting with ./ or ../ are relative to the sbox.yaml file location
 	Volumes []string `yaml:"volumes"`
 
 	// DockerSocket overrides the global docker_socket setting for this project
@@ -55,14 +59,14 @@ type ProjectConfig struct {
 	Envs []string `yaml:"envs"`
 }
 
-// SboxFileConfig represents the configuration from a .sbox file
+// SboxFileConfig represents the configuration from a sbox.yaml file
 // This is the user-facing format that gets loaded from disk
 type SboxFileConfig struct {
 	// Profiles to auto-enable for this project
 	Profiles []string `yaml:"profiles"`
 
 	// Volumes to mount in the sandbox
-	// Paths starting with ./ or ../ are relative to the .sbox file location
+	// Paths starting with ./ or ../ are relative to the sbox.yaml file location
 	Volumes []string `yaml:"volumes"`
 
 	// DockerSocket setting override
@@ -72,12 +76,12 @@ type SboxFileConfig struct {
 	Envs []string `yaml:"envs"`
 }
 
-// SboxFileLocation contains info about a loaded .sbox file
+// SboxFileLocation contains info about a loaded sbox.yaml file
 type SboxFileLocation struct {
-	// Path is the absolute path to the .sbox file
+	// Path is the absolute path to the sbox.yaml file
 	Path string
 
-	// Dir is the directory containing the .sbox file
+	// Dir is the directory containing the sbox.yaml file
 	Dir string
 
 	// Config is the parsed configuration
@@ -378,8 +382,11 @@ func ListProjects() ([]ProjectInfo, error) {
 	return projects, nil
 }
 
-// FindSboxFile searches for a .sbox file starting from the given directory
-// and walking up the directory tree. Returns nil if no .sbox file is found.
+// SboxFileName is the name of the sbox configuration file
+const SboxFileName = "sbox.yaml"
+
+// FindSboxFile searches for a sbox.yaml file starting from the given directory
+// and walking up the directory tree. Returns nil if no sbox.yaml file is found.
 func FindSboxFile(startDir string) (*SboxFileLocation, error) {
 	absPath, err := filepath.Abs(startDir)
 	if err != nil {
@@ -388,20 +395,21 @@ func FindSboxFile(startDir string) (*SboxFileLocation, error) {
 
 	currentDir := absPath
 	for {
-		sboxPath := filepath.Join(currentDir, ".sbox")
-		if _, err := os.Stat(sboxPath); err == nil {
-			// Found .sbox file
+		sboxPath := filepath.Join(currentDir, SboxFileName)
+		info, err := os.Stat(sboxPath)
+		if err == nil && !info.IsDir() {
+			// Found sbox.yaml file (and it's not a directory)
 			data, err := os.ReadFile(sboxPath)
 			if err != nil {
-				return nil, fmt.Errorf("failed to read .sbox file: %w", err)
+				return nil, fmt.Errorf("failed to read %s file: %w", SboxFileName, err)
 			}
 
 			var config SboxFileConfig
 			if err := yaml.Unmarshal(data, &config); err != nil {
-				return nil, fmt.Errorf("failed to parse .sbox file: %w", err)
+				return nil, fmt.Errorf("failed to parse %s file: %w", SboxFileName, err)
 			}
 
-			zlog.Debug("found .sbox file",
+			zlog.Debug("found sbox.yaml file",
 				zap.String("path", sboxPath),
 				zap.Strings("profiles", config.Profiles),
 				zap.Strings("volumes", config.Volumes),
@@ -422,7 +430,7 @@ func FindSboxFile(startDir string) (*SboxFileLocation, error) {
 		currentDir = parentDir
 	}
 
-	zlog.Debug("no .sbox file found", zap.String("start_dir", absPath))
+	zlog.Debug("no sbox.yaml file found", zap.String("start_dir", absPath))
 	return nil, nil
 }
 
@@ -470,8 +478,8 @@ func ParseVolumeSpec(spec string) (hostPath, containerPath string, readOnly bool
 	}
 }
 
-// MergeProjectConfig merges configuration from a .sbox file into a ProjectConfig.
-// The .sbox file settings override/extend the ProjectConfig.
+// MergeProjectConfig merges configuration from a sbox.yaml file into a ProjectConfig.
+// The sbox.yaml file settings override/extend the ProjectConfig.
 func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation) (*ProjectConfig, error) {
 	if sboxFile == nil || sboxFile.Config == nil {
 		return projectConfig, nil
@@ -501,10 +509,10 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 	for _, vol := range sboxConfig.Volumes {
 		hostPath, containerPath, readOnly, err := ParseVolumeSpec(vol)
 		if err != nil {
-			return nil, fmt.Errorf("invalid volume in .sbox file: %w", err)
+			return nil, fmt.Errorf("invalid volume in sbox.yaml file: %w", err)
 		}
 
-		// Resolve the host path relative to .sbox file location
+		// Resolve the host path relative to sbox.yaml file location
 		resolvedHostPath, err := ResolveVolumePath(hostPath, sboxFile.Dir)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve volume path: %w", err)
@@ -531,12 +539,12 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 		}
 	}
 
-	// Override docker_socket if set in .sbox file
+	// Override docker_socket if set in sbox.yaml file
 	if sboxConfig.DockerSocket != "" {
 		merged.DockerSocket = sboxConfig.DockerSocket
 	}
 
-	zlog.Debug("merged project config with .sbox file",
+	zlog.Debug("merged project config with sbox.yaml file",
 		zap.Strings("profiles", merged.Profiles),
 		zap.Strings("volumes", merged.Volumes),
 		zap.Strings("envs", merged.Envs),
@@ -623,18 +631,6 @@ func HasAuthToken() bool {
 // GetCredentialsPath returns the path where sbox stores Claude credentials
 func GetCredentialsPath(config *Config) string {
 	return filepath.Join(config.SboxDataDir, "credentials.json")
-}
-
-// HasCredentials checks if Claude credentials file exists in sbox config
-func HasCredentials() bool {
-	globalConfig, err := LoadConfig()
-	if err != nil {
-		return false
-	}
-
-	credentialsPath := GetCredentialsPath(globalConfig)
-	_, err = os.Stat(credentialsPath)
-	return err == nil
 }
 
 // EnvName extracts the variable name from an env spec ("NAME" or "NAME=VALUE")

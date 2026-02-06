@@ -737,7 +737,7 @@ func TestMergeProjectConfigEnvs(t *testing.T) {
 	}
 
 	sboxFile := &SboxFileLocation{
-		Path: "/tmp/.sbox",
+		Path: "/tmp/sbox.yaml",
 		Dir:  "/tmp",
 		Config: &SboxFileConfig{
 			Envs: []string{"BAZ=qux", "SHARED=new_ignored"},
@@ -883,44 +883,52 @@ func TestParseSandboxLsOutput(t *testing.T) {
 	}{
 		{
 			name: "single sandbox",
-			output: `SANDBOX ID                                                         TEMPLATE                               NAME                               WORKSPACE                                                  STATUS    CREATED
-9bce5b789ffd7460195a5c3d7aac9e5dc181c04f1c50135392e3f2d220a765c5   docker/sandbox-templates:claude-code   claude-sandbox-2026-01-27-103821   /Users/maoueh/work/sf/substreams-eth-uni-v4-demo-candles   running   2026-01-27 15:38:21
+			output: `SANDBOX                        AGENT    STATUS    WORKSPACE
+claude-sbox                    claude   running   /Users/maoueh/work/sf/sbox
 `,
 			expected: []DockerSandbox{
 				{
-					ID:        "9bce5b789ffd7460195a5c3d7aac9e5dc181c04f1c50135392e3f2d220a765c5",
-					Image:     "docker/sandbox-templates:claude-code",
-					Name:      "claude-sandbox-2026-01-27-103821",
-					Workspace: "/Users/maoueh/work/sf/substreams-eth-uni-v4-demo-candles",
+					ID:        "claude-sbox",
+					Name:      "claude-sbox",
+					Image:     "claude",
 					Status:    "running",
+					Workspace: "/Users/maoueh/work/sf/sbox",
 				},
 			},
 		},
 		{
 			name:     "empty output",
-			output:   "SANDBOX ID   TEMPLATE   NAME   WORKSPACE   STATUS   CREATED\n",
+			output:   "SANDBOX   AGENT   STATUS   WORKSPACE\n",
 			expected: nil,
 		},
 		{
 			name: "multiple sandboxes",
-			output: `SANDBOX ID                                                         TEMPLATE                               NAME                               WORKSPACE                                                  STATUS    CREATED
-9bce5b789ffd7460195a5c3d7aac9e5dc181c04f1c50135392e3f2d220a765c5   docker/sandbox-templates:claude-code   claude-sandbox-2026-01-27-103821   /Users/maoueh/work/sf/substreams-eth-uni-v4-demo-candles   running   2026-01-27 15:38:21
-abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd   docker/sandbox-templates:claude-code   claude-sandbox-2026-01-27-120000   /Users/maoueh/work/sf/other-project                       stopped   2026-01-27 17:00:00
+			output: `SANDBOX                        AGENT    STATUS    WORKSPACE
+claude-sbox                    claude   running   /Users/maoueh/work/sf/sbox
+claude-substreams-benchmarks   claude   stopped   -
+sbox-claude-substreams-rs      claude   running   -
 `,
 			expected: []DockerSandbox{
 				{
-					ID:        "9bce5b789ffd7460195a5c3d7aac9e5dc181c04f1c50135392e3f2d220a765c5",
-					Image:     "docker/sandbox-templates:claude-code",
-					Name:      "claude-sandbox-2026-01-27-103821",
-					Workspace: "/Users/maoueh/work/sf/substreams-eth-uni-v4-demo-candles",
+					ID:        "claude-sbox",
+					Name:      "claude-sbox",
+					Image:     "claude",
 					Status:    "running",
+					Workspace: "/Users/maoueh/work/sf/sbox",
 				},
 				{
-					ID:        "abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd",
-					Image:     "docker/sandbox-templates:claude-code",
-					Name:      "claude-sandbox-2026-01-27-120000",
-					Workspace: "/Users/maoueh/work/sf/other-project",
+					ID:        "claude-substreams-benchmarks",
+					Name:      "claude-substreams-benchmarks",
+					Image:     "claude",
 					Status:    "stopped",
+					Workspace: "",
+				},
+				{
+					ID:        "sbox-claude-substreams-rs",
+					Name:      "sbox-claude-substreams-rs",
+					Image:     "claude",
+					Status:    "running",
+					Workspace: "",
 				},
 			},
 		},

@@ -4,7 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## v1.0.0
+
+### Added
+
+- Multi-architecture support for dev builds (auto-detects amd64/arm64 from Docker)
+- `--debug` flag for `sbox run` to enable debug output from docker sandbox commands
+- `Makefile` with `build-image` target for building the sbox binary image locally
+
+### Changed
+
+- Renamed config file from `.sbox` to `sbox.yaml` to avoid conflict with `.sbox/` directory
+- Template images now use `CMD` instead of `ENTRYPOINT` for docker sandbox compatibility
+  - Docker sandbox requires its own entrypoint to manage container lifecycle
+  - Setting `ENTRYPOINT` caused containers to be killed (SIGKILL/exit 137)
+  - The `sbox entrypoint` command now runs via `CMD` after sandbox initialization
+- Migrated from container-based Docker sandbox to MicroVM-based Docker sandbox
+  - `docker ps` replaced with `docker sandbox ls` for sandbox discovery
+  - `docker exec` replaced with `docker sandbox exec` for shell connections
+  - `docker stop/rm` replaced with `docker sandbox stop/rm` for sandbox lifecycle
+  - `--mount-docker-socket` flag is now ignored (Docker is automatically available in MicroVM sandboxes)
+  - Mount introspection (`CheckBrokenMounts`, `CheckMountMismatch`) disabled for MicroVM sandboxes
 
 ### Added
 
@@ -17,8 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `sbox env add FOO=bar BAZ` — add explicit values or host passthrough variables
   - `sbox env add --global TOKEN` — add to global config (shared across all projects)
   - `sbox env remove FOO BAZ` — remove by name (use `--global` for global config)
-  - `sbox env list` — show all vars with source labels (`[global]`, `[project]`, `[.sbox]`)
-  - Project-specific envs override global ones; `.sbox` file overrides global
+  - `sbox env list` — show all vars with source labels (`[global]`, `[project]`, `[sbox.yaml]`)
+  - Project-specific envs override global ones; `sbox.yaml` file overrides global
   - `sbox info` now shows environment variables with their source
 - Profile dependency support - profiles can now declare dependencies on other profiles
 - Agent sharing via `--agents` CLI flag (converts `~/.claude/agents/*.md` to JSON)
@@ -28,12 +48,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Docker command display in `sbox info`
 - `--all` flag to `sbox info` to list all known projects
 - `--workspace/-w` flag to `sbox info` to specify workspace directory
-- `sbox auth` command for shared authentication across all sandboxes
-  - Runs `claude setup-token` to generate OAuth credentials
-  - Stores `.credentials.json` in `~/.config/sbox/` directory (separate from user's Claude installation)
-  - Credentials automatically mounted to `/home/agent/.claude/.credentials.json` in all sandbox sessions
-  - `--status` flag to check authentication status
-  - `--logout` flag to remove stored credentials
+- `sbox auth` command for configuring API key shared across all sandboxes
+  - Prompts for Anthropic API key and stores it as a global environment variable
+  - API key is automatically passed to all sandbox sessions via `-e ANTHROPIC_API_KEY=...`
+  - `--status` flag to check if API key is configured
+  - `--logout` flag to remove stored API key
 
 ### Changed
 
@@ -52,11 +71,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Fixed `chmod` to include write permissions (`a+rwx`) so `rustup` operations work (uses `/usr/local/rustup/tmp/`)
   - `cargo`, `rustc`, and `rustup` commands now work correctly inside the sandbox
 - Integration tests now run as `agent` user to match the sandbox environment and catch permission issues
-- Authentication now works correctly across sandbox sessions
-  - Previously stored token as environment variable which wasn't reliably recognized by Claude
-  - Now creates proper `.credentials.json` file in `~/.config/sbox/credentials.json`
-  - File is mounted into sandbox at `/home/agent/.claude/.credentials.json`
-  - Keeps sbox authentication separate from user's existing Claude installation
+- Authentication now uses API key via environment variable instead of credentials file mounting
+  - Simpler and more reliable than the previous OAuth/credentials.json approach
+  - API key stored in global config and passed as `-e ANTHROPIC_API_KEY=...` to all sandboxes
 
 ### Removed
 

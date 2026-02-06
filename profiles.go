@@ -22,9 +22,9 @@ var BuiltinProfiles = map[string]Profile{
 		Description: "Go programming language toolchain (latest stable version)",
 		DockerfileSnippet: `# Go toolchain
 RUN apt-get update && apt-get install -y wget && \
-    wget -q https://go.dev/dl/go1.24.4.linux-amd64.tar.gz && \
-    tar -C /usr/local -xzf go1.24.4.linux-amd64.tar.gz && \
-    rm go1.24.4.linux-amd64.tar.gz && \
+    wget -q https://go.dev/dl/go1.24.4.linux-${GO_ARCH}.tar.gz && \
+    tar -C /usr/local -xzf go1.24.4.linux-${GO_ARCH}.tar.gz && \
+    rm go1.24.4.linux-${GO_ARCH}.tar.gz && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/local/go/bin:${PATH}"
@@ -78,7 +78,7 @@ RUN apt-get update && apt-get install -y \
     tree \
     zip \
     unzip && \
-    wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && \
+    wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${YQ_ARCH} && \
     chmod +x /usr/local/bin/yq && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 `,
@@ -98,7 +98,7 @@ RUN apt-get update && apt-get install -y curl unzip && \
     curl -sSL "https://github.com/bufbuild/buf/releases/latest/download/buf-$(uname -s)-$(uname -m)" -o /usr/local/bin/buf && \
     chmod +x /usr/local/bin/buf && \
     PROTOC_VERSION=$(curl -sSL https://api.github.com/repos/protocolbuffers/protobuf/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/') && \
-    curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip && \
+    curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" -o /tmp/protoc.zip && \
     unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*' && \
     rm /tmp/protoc.zip && \
     apt-get clean && rm -rf /var/lib/apt/lists/*

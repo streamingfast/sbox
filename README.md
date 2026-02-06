@@ -13,8 +13,6 @@ Running Claude Code in Docker sandbox mode provides security isolation, but lose
 - **Environment variables** — Pass host environment variables to the sandbox with global and per-project configuration
 - **Project management** — Track sandbox state, profiles, volumes, and configuration per project
 
-> **Note:** Authentication is not yet shared across sandboxes. Each sandbox session requires its own authentication. The `sbox auth` command exists but credentials sharing is still a work in progress.
-
 ## Installation
 
 ```bash
@@ -113,20 +111,20 @@ sbox env remove --global TOKEN       # Remove from global config
 
 Environment variables are merged from three sources (later overrides earlier):
 1. Global config (`~/.config/sbox/config.yaml`)
-2. `.sbox` file (checked into repo)
+2. `sbox.yaml` file (checked into repo)
 3. Project config (`~/.config/sbox/projects/<hash>/config.yaml`)
 
 ### `sbox auth`
 
-Manage authentication for sandbox sessions.
+Configure the Anthropic API key for all sandbox sessions.
 
 ```bash
-sbox auth            # Set up authentication
-sbox auth --status   # Check authentication status
-sbox auth --logout   # Remove stored credentials
+sbox auth            # Prompt for API key and store it
+sbox auth --status   # Check if API key is configured
+sbox auth --logout   # Remove stored API key
 ```
 
-> **Caveat:** Authentication is not reliably shared across sandbox sessions yet. You may need to re-authenticate in each new sandbox.
+The API key is stored in the global config and passed as `ANTHROPIC_API_KEY` to all sandboxes. This avoids the need to modify shell configuration files or restart Docker Desktop.
 
 ### `sbox config`
 
@@ -160,9 +158,9 @@ envs:
   - SECRET=default_value
 ```
 
-### Project Config (`.sbox`)
+### Project Config (`sbox.yaml`)
 
-A `.sbox` file can be checked into your repository to share configuration with your team:
+A `sbox.yaml` file can be checked into your repository to share configuration with your team:
 
 ```yaml
 profiles:
