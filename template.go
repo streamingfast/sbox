@@ -109,9 +109,13 @@ func (tb *TemplateBuilder) TemplateHash() string {
 
 // sboxVersion returns the sbox version to use for the template.
 // In dev mode (SBOX_DEV=1), returns "dev" to indicate local build.
+// If the version is "dev" (no ldflags override), falls back to "latest".
 func (tb *TemplateBuilder) sboxVersion() string {
 	if os.Getenv("SBOX_DEV") == "1" {
 		return "dev"
+	}
+	if Version == "dev" {
+		return "latest"
 	}
 	return Version
 }
@@ -211,7 +215,7 @@ func (tb *TemplateBuilder) GenerateDockerfile(targetArch *TargetArch) (string, e
 		sb.WriteString("COPY sbox /usr/local/bin/sbox\n")
 	} else {
 		sb.WriteString("# Copy sbox binary from release image\n")
-		sb.WriteString("COPY --from=sbox-bin /sbox /usr/local/bin/sbox\n")
+		sb.WriteString("COPY --from=sbox-bin /usr/local/bin/sbox /usr/local/bin/sbox\n")
 	}
 	sb.WriteString("RUN chmod +x /usr/local/bin/sbox\n\n")
 

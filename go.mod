@@ -1,8 +1,6 @@
 module github.com/streamingfast/sbox
 
-go 1.24
-
-toolchain go1.24.4
+go 1.25
 
 require (
 	github.com/spf13/cobra v1.1.3

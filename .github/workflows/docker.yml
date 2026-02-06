@@ -76,6 +76,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
+          cache-from: type=gha,scope=${{ matrix.platform_suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform_suffix }}
           build-args: |
             VERSION=${{ steps.extract-version.outputs.VERSION }}
 
