@@ -3,3 +3,6 @@
 claudebox
 /sbox
 .build
+build
+dist
+.sbox
