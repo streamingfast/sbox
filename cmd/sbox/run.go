@@ -14,21 +14,26 @@ import (
 
 var RunCommand = Command(runE,
 	"run",
-	"Launch Claude in Docker sandbox with configured mounts and profiles",
+	"Launch Claude in Docker sandbox or container with configured mounts and profiles",
 	Description(`
-		Launches a Docker sandbox running Claude Code with:
+		Launches a Docker sandbox or container running Claude Code with:
 		- Shared ~/.claude/agents and ~/.claude/plugins directories
 		- Concatenated CLAUDE.md/AGENTS.md hierarchy from parent directories
 		- Persistent credentials across sessions
 		- Optional Docker socket access
 		- Custom profiles for additional tool installations (Go, Rust, etc.)
+
+		Backend types:
+		- sandbox (default): Uses Docker sandbox MicroVM for enhanced isolation
+		- container: Uses standard Docker container with named volume persistence
 	`),
 	Flags(func(flags *pflag.FlagSet) {
-		flags.Bool("docker-socket", false, "Mount Docker socket into sandbox")
+		flags.Bool("docker-socket", false, "Mount Docker socket into sandbox/container")
 		flags.StringSlice("profile", nil, "Additional profiles to use for this session")
-		flags.Bool("recreate", false, "Force rebuild of custom template image and recreate sandbox")
+		flags.Bool("recreate", false, "Force rebuild of custom template image and recreate sandbox/container")
 		flags.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
-		flags.Bool("debug", false, "Enable debug mode for docker sandbox commands")
+		flags.Bool("debug", false, "Enable debug mode for docker commands")
+		flags.String("backend", "", "Backend type: 'sandbox' (default) or 'container'")
 	}),
 )
 
@@ -89,6 +94,31 @@ func runE(cmd *cobra.Command, args []string) error {
 	debug, err := cmd.Flags().GetBool("debug")
 	if err != nil {
 		return fmt.Errorf("failed to get debug flag: %w", err)
+	}
+
+	backendFlag, err := cmd.Flags().GetString("backend")
+	if err != nil {
+		return fmt.Errorf("failed to get backend flag: %w", err)
+	}
+
+	// Validate backend flag if provided
+	if backendFlag != "" {
+		if err := sbox.ValidateBackend(backendFlag); err != nil {
+			return err
+		}
+	}
+
+	// Resolve which backend to use (CLI > sbox.yaml > project > global > default)
+	backendType := sbox.ResolveBackendType(backendFlag, sboxFile, projectConfig, config)
+	zlog.Debug("resolved backend type", zap.String("backend", string(backendType)))
+
+	// Persist the resolved backend to project config so shell/stop/info can find it
+	projectConfig.Backend = string(backendType)
+
+	// Get the backend implementation
+	backend, err := sbox.GetBackend(string(backendType), config)
+	if err != nil {
+		return fmt.Errorf("failed to get backend: %w", err)
 	}
 
 	// Generate sandbox name first (needed for lookup)
@@ -174,8 +204,8 @@ func runE(cmd *cobra.Command, args []string) error {
 		// Non-fatal: continue running sandbox even if we can't save config
 	}
 
-	// Build sandbox options
-	opts := sbox.SandboxOptions{
+	// Build backend options
+	opts := sbox.BackendOptions{
 		WorkspaceDir:      workspaceDir,
 		MountDockerSocket: dockerSocket,
 		Profiles:          profiles,
@@ -186,8 +216,9 @@ func runE(cmd *cobra.Command, args []string) error {
 		SboxFile:          sboxFile,
 	}
 
-	// Run the sandbox
-	return sbox.RunSandbox(opts)
+	// Run using the selected backend
+	cmd.Printf("Using %s backend\n", backend.Name())
+	return backend.Run(opts)
 }
 
 // checkAndWarnMountMismatch checks if the running sandbox has different mounts than expected

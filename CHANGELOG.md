@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## v1.1.0
+
+### Added
+
+- Backend abstraction to support multiple container execution backends
+  - **Sandbox backend** (default): Uses Docker sandbox MicroVM for enhanced isolation
+  - **Container backend**: Uses standard Docker containers with named volume persistence
+- `--backend` flag for `sbox run` to select the backend type (`sandbox` or `container`)
+- `backend` field in `sbox.yaml` to configure backend per-project
+- `backend` field in project config (persisted when using `--backend` flag)
+- `default_backend` field in global config (`~/.config/sbox/config.yaml`)
+- Named volume persistence for container backend (`sbox-claude-<hash>`) to persist `.claude` folder across sessions
+- `sbox info` now displays the configured backend type for each project
+- `sbox stop --rm --all` now removes persistence volumes for container backend projects
+
+### Changed
+
+- CLI commands (`shell`, `stop`, `info`) now automatically detect the backend from project configuration
+- Backend resolution priority: CLI flag > sbox.yaml > project config > global config > default (sandbox)
+
 ## v1.0.0
 
 ### Added

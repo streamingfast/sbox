@@ -30,6 +30,10 @@ type Config struct {
 	// Format: "NAME" (passthrough from host) or "NAME=VALUE" (explicit value)
 	// Project-specific envs override these
 	Envs []string `yaml:"envs"`
+
+	// DefaultBackend is the default backend type: "sandbox" (default) or "container"
+	// Can be overridden per-project via sbox.yaml or project config
+	DefaultBackend string `yaml:"default_backend"`
 }
 
 // ProjectConfig holds per-project configuration settings
@@ -57,6 +61,10 @@ type ProjectConfig struct {
 	// Envs are environment variables to pass to the sandbox
 	// Format: "NAME" (passthrough from host) or "NAME=VALUE" (explicit value)
 	Envs []string `yaml:"envs"`
+
+	// Backend overrides the default backend for this project
+	// Values: "sandbox", "container", or empty to use default
+	Backend string `yaml:"backend"`
 }
 
 // SboxFileConfig represents the configuration from a sbox.yaml file
@@ -74,6 +82,9 @@ type SboxFileConfig struct {
 
 	// Envs are environment variables to pass to the sandbox
 	Envs []string `yaml:"envs"`
+
+	// Backend specifies the container backend: "sandbox" (default) or "container"
+	Backend string `yaml:"backend"`
 }
 
 // SboxFileLocation contains info about a loaded sbox.yaml file
@@ -491,6 +502,7 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 		Volumes:      projectConfig.Volumes,
 		DockerSocket: projectConfig.DockerSocket,
 		Envs:         projectConfig.Envs,
+		Backend:      projectConfig.Backend,
 	}
 
 	// Merge profiles (combine both lists, removing duplicates)
@@ -544,11 +556,17 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 		merged.DockerSocket = sboxConfig.DockerSocket
 	}
 
+	// Override backend if set in sbox.yaml file
+	if sboxConfig.Backend != "" {
+		merged.Backend = sboxConfig.Backend
+	}
+
 	zlog.Debug("merged project config with sbox.yaml file",
 		zap.Strings("profiles", merged.Profiles),
 		zap.Strings("volumes", merged.Volumes),
 		zap.Strings("envs", merged.Envs),
-		zap.String("docker_socket", merged.DockerSocket))
+		zap.String("docker_socket", merged.DockerSocket),
+		zap.String("backend", merged.Backend))
 
 	return merged, nil
 }

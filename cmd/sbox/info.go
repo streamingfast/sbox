@@ -8,16 +8,18 @@ import (
 	"github.com/spf13/pflag"
 	. "github.com/streamingfast/cli"
 	"github.com/streamingfast/sbox"
+	"go.uber.org/zap"
 )
 
 var InfoCommand = Command(infoE,
 	"info",
 	"Show project information",
 	Description(`
-		Shows information about the sandbox project for the current directory.
+		Shows information about the sandbox/container project for the current directory.
 
 		Without flags, shows the current project's status including:
 		- Workspace path and hash
+		- Backend type (sandbox or container)
 		- Running status (stopped/running with container info)
 		- Configured profiles
 		- Additional volumes
@@ -87,10 +89,21 @@ func infoCurrentProject(cmd *cobra.Command) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	// Resolve backend type
+	sboxFile, _ := sbox.FindSboxFile(workspaceDir)
+	backendType := sbox.ResolveBackendType("", sboxFile, project.Config, config)
+	zlog.Debug("resolved backend type for info", zap.String("backend", string(backendType)))
+
+	backend, err := sbox.GetBackend(string(backendType), config)
+	if err != nil {
+		return fmt.Errorf("failed to get backend: %w", err)
+	}
+
 	cmd.Printf("Project: %s\n", workspaceDir)
 	cmd.Printf("  Hash:    %s\n", project.Hash)
+	cmd.Printf("  Backend: %s\n", backendType)
 
-	printSandboxStatus(cmd, workspaceDir, project.Config.SandboxName, "  ")
+	printContainerStatus(cmd, workspaceDir, project.Config.SandboxName, backend, "  ")
 
 	if len(project.Config.Profiles) > 0 {
 		cmd.Printf("  Profiles:\n")
@@ -117,14 +130,16 @@ func infoCurrentProject(cmd *cobra.Command) error {
 		cmd.Printf("  Docker:   %s\n", project.Config.DockerSocket)
 	}
 
-	// Build and display the docker command
-	opts := sbox.SandboxOptions{
-		WorkspaceDir:  workspaceDir,
-		Config:        config,
-		ProjectConfig: project.Config,
-	}
-	if dockerArgs, err := sbox.BuildDockerCommand(opts); err == nil {
-		cmd.Printf("  Command:\n    docker %s\n", formatDockerCommand(dockerArgs))
+	// Build and display the docker command (only for sandbox backend)
+	if backendType == sbox.BackendSandbox {
+		opts := sbox.SandboxOptions{
+			WorkspaceDir:  workspaceDir,
+			Config:        config,
+			ProjectConfig: project.Config,
+		}
+		if dockerArgs, err := sbox.BuildDockerCommand(opts); err == nil {
+			cmd.Printf("  Command:\n    docker %s\n", formatDockerCommand(dockerArgs))
+		}
 	}
 
 	return nil
@@ -160,10 +175,27 @@ func infoAllProjects(cmd *cobra.Command) error {
 			}
 		}
 
+		// Resolve backend type for this project
+		var projectBackendType sbox.BackendType = sbox.BackendSandbox
+		if workspacePath != "" {
+			globalConfig, _ := sbox.LoadConfig()
+			projectSboxFile, _ := sbox.FindSboxFile(workspacePath)
+			projectBackendType = sbox.ResolveBackendType("", projectSboxFile, project.Config, globalConfig)
+		}
+
 		cmd.Printf("  %s\n", pathDisplay)
 		cmd.Printf("    Hash:    %s\n", project.Hash)
+		cmd.Printf("    Backend: %s\n", projectBackendType)
 
-		printSandboxStatus(cmd, workspacePath, project.Config.SandboxName, "    ")
+		if workspacePath != "" {
+			globalConfig, _ := sbox.LoadConfig()
+			backend, _ := sbox.GetBackend(string(projectBackendType), globalConfig)
+			if backend != nil {
+				printContainerStatus(cmd, workspacePath, project.Config.SandboxName, backend, "    ")
+			}
+		} else {
+			cmd.Printf("    Status:  unknown (legacy project)\n")
+		}
 
 		if len(project.Config.Profiles) > 0 {
 			cmd.Printf("    Profiles:\n")
@@ -191,8 +223,8 @@ func infoAllProjects(cmd *cobra.Command) error {
 			cmd.Printf("    Docker:   %s\n", project.Config.DockerSocket)
 		}
 
-		// Build and display the docker command if workspace exists
-		if workspacePath != "" {
+		// Build and display the docker command if workspace exists (only for sandbox backend)
+		if workspacePath != "" && projectBackendType == sbox.BackendSandbox {
 			if _, err := os.Stat(workspacePath); err == nil {
 				config, err := sbox.LoadConfig()
 				if err == nil {
@@ -213,11 +245,11 @@ func infoAllProjects(cmd *cobra.Command) error {
 	return nil
 }
 
-// printSandboxStatus prints the Sandbox section with consistent formatting.
-// sandboxName is always derived from config; workspaceDir may be empty for legacy projects.
-func printSandboxStatus(cmd *cobra.Command, workspaceDir string, sandboxName string, prefix string) {
+// printContainerStatus prints the container/sandbox status with consistent formatting.
+// Uses the backend abstraction to find the container status.
+func printContainerStatus(cmd *cobra.Command, workspaceDir string, containerName string, backend sbox.Backend, prefix string) {
 	// Always derive a name to display
-	name := sandboxName
+	name := containerName
 	if name == "" && workspaceDir != "" {
 		derived, err := sbox.GenerateSandboxName(workspaceDir)
 		if err == nil {
@@ -225,7 +257,12 @@ func printSandboxStatus(cmd *cobra.Command, workspaceDir string, sandboxName str
 		}
 	}
 
-	cmd.Printf("%sSandbox:\n", prefix)
+	label := "Container"
+	if backend.Name() == sbox.BackendSandbox {
+		label = "Sandbox"
+	}
+
+	cmd.Printf("%s%s:\n", prefix, label)
 	if name != "" {
 		cmd.Printf("%s  Name:   %s\n", prefix, name)
 	}
@@ -235,30 +272,17 @@ func printSandboxStatus(cmd *cobra.Command, workspaceDir string, sandboxName str
 		return
 	}
 
-	container, containerErr := sbox.FindRunningSandbox(workspaceDir)
-	if containerErr != nil {
-		cmd.Printf("%s  Status: error (%s)\n", prefix, containerErr)
+	// Use backend to find container status
+	info, err := backend.Find(workspaceDir)
+	if err != nil {
+		cmd.Printf("%s  Status: error (%s)\n", prefix, err)
 		return
 	}
 
-	if container != nil {
-		cmd.Printf("%s  Status: running\n", prefix)
-		if container.Image != "" {
-			cmd.Printf("%s  Image:  %s\n", prefix, container.Image)
-		}
-		return
-	}
-
-	sandbox, sandboxErr := sbox.FindDockerSandbox(workspaceDir)
-	if sandboxErr != nil {
-		cmd.Printf("%s  Status: error (%s)\n", prefix, sandboxErr)
-		return
-	}
-
-	if sandbox != nil {
-		cmd.Printf("%s  Status: stopped\n", prefix)
-		if sandbox.Image != "" {
-			cmd.Printf("%s  Image:  %s\n", prefix, sandbox.Image)
+	if info != nil {
+		cmd.Printf("%s  Status: %s\n", prefix, info.Status)
+		if info.Image != "" {
+			cmd.Printf("%s  Image:  %s\n", prefix, info.Image)
 		}
 		return
 	}
