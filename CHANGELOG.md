@@ -18,11 +18,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Named volume persistence for container backend (`sbox-claude-<hash>`) to persist `.claude` folder across sessions
 - `sbox info` now displays the configured backend type for each project
 - `sbox stop --rm --all` now removes persistence volumes for container backend projects
+- Claude state caching for sandbox backend
+  - Entire `.claude` folder is synced to `.sbox/claude-cache/` on `sbox stop`
+  - Cache is restored on sandbox creation, preserving auth across recreations
+  - Automatically saves cache before `sbox run --recreate`
+  - Uses `rsync` for efficient synchronization
+  - Preserves: credentials, settings, projects, plugins, agents, shell-snapshots, todos, etc.
+- Platform-aware Docker socket mounting for container backend
+  - macOS: Checks `~/.docker/run/docker.sock` first, then `/var/run/docker.sock`
+  - Linux: Uses `/var/run/docker.sock`
+  - `SBOX_DOCKER_SOCKET` environment variable for explicit path override
+- `sbox info` now shows both create and run commands for sandbox backend
 
 ### Changed
 
 - CLI commands (`shell`, `stop`, `info`) now automatically detect the backend from project configuration
 - Backend resolution priority: CLI flag > sbox.yaml > project config > global config > default (sandbox)
+- Refactored CLI commands to use shared `WorkspaceContext` for config loading
+- Added `Capitalize()` method to `BackendType` for consistent display formatting
+- Added `SaveCache()` and `Cleanup()` methods to `Backend` interface for proper encapsulation
 
 ## v1.0.0
 

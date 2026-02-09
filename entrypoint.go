@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -323,6 +324,10 @@ func FindClaudeHome() string {
 // Claude can check this file to verify the entrypoint ran.
 const SboxEntrypointMarkerFile = "/tmp/sbox-entrypoint-ran"
 
+// ClaudeCacheDir is the subdirectory in .sbox/ where we cache the .claude folder
+// for persistence across sandbox recreations.
+const ClaudeCacheDir = "claude-cache"
+
 // RunEntrypoint executes the entrypoint logic inside the sandbox.
 // It reads the configuration from .sbox/, sets up plugins/agents/env,
 // then execs claude with the provided arguments.
@@ -406,6 +411,13 @@ func RunEntrypoint(args []string) error {
 	// Find claude home
 	claudeHome := FindClaudeHome()
 	elog.Info("claude home directory", "path", claudeHome)
+
+	// Restore .claude cache if present (for persistence across recreations)
+	elog.Info("checking for claude cache to restore")
+	if err := restoreClaudeCache(workspaceDir, claudeHome); err != nil {
+		elog.Warn("failed to restore claude cache", "error", err)
+		// Non-fatal - continue anyway
+	}
 
 	// Setup CLAUDE.md (copy from .sbox to ~/.claude)
 	elog.Info("setting up CLAUDE.md")
@@ -997,6 +1009,103 @@ func resolveEnvs(globalEnvs, projectEnvs, sboxFileEnvs []string) []string {
 	}
 
 	return resolved
+}
+
+// SaveClaudeCache saves the .claude folder from inside a running sandbox to .sbox/claude-cache/.
+// This is called by `sbox stop` before stopping the sandbox to preserve credentials.
+// Uses rsync inside the container to sync to the workspace's .sbox/claude-cache/ directory.
+func SaveClaudeCache(workspaceDir string, backend Backend) error {
+	cachePath := filepath.Join(workspaceDir, ".sbox", ClaudeCacheDir)
+
+	zlog.Info("saving claude cache",
+		zap.String("workspace", workspaceDir),
+		zap.String("cache_path", cachePath))
+
+	// Ensure cache directory exists (it's in the workspace, accessible from both host and container)
+	if err := os.MkdirAll(cachePath, 0755); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	// Find the running container
+	info, err := backend.FindRunning(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to find running container: %w", err)
+	}
+	if info == nil {
+		return fmt.Errorf("no running container found")
+	}
+
+	// Build the exec command based on backend type
+	var execPrefix []string
+	if backend.Name() == BackendSandbox {
+		execPrefix = []string{"docker", "sandbox", "exec", info.ID}
+	} else {
+		execPrefix = []string{"docker", "exec", info.ID}
+	}
+
+	claudeHome := "/home/agent/.claude"
+
+	// Use rsync inside the container to sync .claude to .sbox/claude-cache/
+	// The .sbox directory is mounted in the workspace, so changes are visible on host
+	// --archive preserves permissions, timestamps, etc.
+	// --delete ensures cache is an exact mirror (removes stale files from cache)
+	rsyncArgs := append(execPrefix, "rsync", "-a", "--delete", claudeHome+"/", cachePath+"/")
+
+	cmd := exec.Command(rsyncArgs[0], rsyncArgs[1:]...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		zlog.Warn("rsync failed",
+			zap.Error(err),
+			zap.String("output", string(output)))
+		return fmt.Errorf("rsync failed: %w", err)
+	}
+
+	zlog.Info("claude cache saved successfully",
+		zap.String("cache_path", cachePath))
+
+	return nil
+}
+
+// restoreClaudeCache restores the .claude folder from .sbox/claude-cache/ if present.
+// This allows credentials and settings to persist across sandbox recreations.
+// Uses rsync to efficiently sync the cache to the claude home directory.
+func restoreClaudeCache(workspaceDir, claudeHome string) error {
+	cachePath := filepath.Join(workspaceDir, ".sbox", ClaudeCacheDir)
+
+	// Check if cache exists and has content
+	entries, err := os.ReadDir(cachePath)
+	if os.IsNotExist(err) || len(entries) == 0 {
+		elog.Debug("no claude cache found or empty", "path", cachePath)
+		zlog.Debug("no claude cache found, skipping restore")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read cache directory: %w", err)
+	}
+
+	elog.Info("restoring claude cache", "src", cachePath, "dst", claudeHome)
+	zlog.Info("restoring claude cache from .sbox",
+		zap.String("cache_path", cachePath),
+		zap.String("claude_home", claudeHome))
+
+	// Ensure claude home exists
+	if err := os.MkdirAll(claudeHome, 0755); err != nil {
+		return fmt.Errorf("failed to create claude home: %w", err)
+	}
+
+	// Use rsync to restore cache to claude home
+	// --archive preserves permissions, timestamps, etc.
+	// We don't use --delete here to preserve any existing data
+	cmd := exec.Command("rsync", "-a", cachePath+"/", claudeHome+"/")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		elog.Error("rsync restore failed", "error", err, "output", string(output))
+		return fmt.Errorf("rsync failed: %w", err)
+	}
+
+	elog.Info("claude cache restored successfully")
+	zlog.Info("claude cache restored successfully")
+	return nil
 }
 
 // prepareCLAUDEMD uses PrepareMDForSandbox to discover and concatenate MD files,

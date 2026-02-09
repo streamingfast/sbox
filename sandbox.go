@@ -42,11 +42,59 @@ type SandboxOptions struct {
 	SboxFile *SboxFileLocation
 }
 
-// BuildDockerCommand builds the docker sandbox command arguments without executing.
-// This is useful for displaying what command would be run.
-// Returns the full argument list (not including "docker" itself).
-func BuildDockerCommand(opts SandboxOptions) ([]string, error) {
-	return buildDockerArgs(opts, false)
+// SandboxCommands holds the docker commands for creating and running a sandbox.
+// Used for display purposes (e.g., sbox info).
+type SandboxCommands struct {
+	// CreateArgs are the arguments for `docker sandbox create ...`
+	CreateArgs []string
+	// RunArgs are the arguments for `docker sandbox run ...`
+	RunArgs []string
+}
+
+// BuildSandboxCommands builds both the create and run docker sandbox commands.
+// This is the single source of truth for command construction, used for display purposes.
+// Returns the argument lists (not including "docker" itself).
+func BuildSandboxCommands(opts SandboxOptions) (*SandboxCommands, error) {
+	// Generate sandbox name
+	sandboxName := opts.ProjectConfig.SandboxName
+	if sandboxName == "" {
+		var err error
+		sandboxName, err = GenerateSandboxName(opts.WorkspaceDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate sandbox name: %w", err)
+		}
+	}
+
+	// Merge project profiles with command-line profiles
+	allProfiles := mergeProfiles(opts.ProjectConfig.Profiles, opts.Profiles)
+
+	// Build template image name if profiles are specified
+	var templateImage string
+	if len(allProfiles) > 0 {
+		builder := NewTemplateBuilder(opts.Config, allProfiles)
+		templateImage = builder.ImageName()
+	}
+
+	// Build create command args
+	createArgs := []string{"sandbox", "create", "--name", sandboxName}
+
+	// Add custom template if we have one and it's different from default
+	if templateImage != "" && templateImage != DefaultTemplateImage {
+		// --load-local-template is required for locally built images
+		createArgs = append(createArgs, "--load-local-template", "--template", templateImage)
+	}
+
+	// Add the Claude agent and workspace path
+	absPath, _ := filepath.Abs(opts.WorkspaceDir)
+	createArgs = append(createArgs, "claude", absPath)
+
+	// Build run command args (always the same simple form)
+	runArgs := []string{"sandbox", "run", sandboxName}
+
+	return &SandboxCommands{
+		CreateArgs: createArgs,
+		RunArgs:    runArgs,
+	}, nil
 }
 
 // RunSandbox executes the Docker sandbox with all configured mounts and settings.
@@ -152,63 +200,6 @@ func RunSandbox(opts SandboxOptions) error {
 
 	zlog.Info("Docker sandbox exited successfully")
 	return nil
-}
-
-// buildDockerArgs builds the docker sandbox command arguments for display purposes.
-// This is used by BuildDockerCommand to show what command would be run.
-// The actual execution uses RunSandbox which handles create/run separately.
-func buildDockerArgs(opts SandboxOptions, buildTemplate bool) ([]string, error) {
-	// Generate sandbox name
-	sandboxName := opts.ProjectConfig.SandboxName
-	if sandboxName == "" {
-		var err error
-		sandboxName, err = GenerateSandboxName(opts.WorkspaceDir)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate sandbox name: %w", err)
-		}
-	}
-
-	// Check if sandbox exists to determine which command to show
-	existingSandbox, _ := FindDockerSandboxByName(sandboxName)
-
-	if existingSandbox != nil {
-		// Sandbox exists - show simple run command
-		return []string{"sandbox", "run", sandboxName}, nil
-	}
-
-	// Sandbox doesn't exist - show create command that would be used
-	// Merge project profiles with command-line profiles
-	allProfiles := mergeProfiles(opts.ProjectConfig.Profiles, opts.Profiles)
-
-	// Build custom template if profiles are specified
-	var templateImage string
-	if len(allProfiles) > 0 {
-		builder := NewTemplateBuilder(opts.Config, allProfiles)
-		if buildTemplate {
-			var err error
-			templateImage, err = builder.Build(opts.ForceRebuild)
-			if err != nil {
-				return nil, fmt.Errorf("failed to build custom template: %w", err)
-			}
-		} else {
-			templateImage = builder.ImageName()
-		}
-	}
-
-	// Build create command args
-	args := []string{"sandbox", "create", "--name", sandboxName}
-
-	// Add custom template if we have one and it's different from default
-	if templateImage != "" && templateImage != DefaultTemplateImage {
-		// --load-local-template is required for locally built images
-		args = append(args, "--load-local-template", "--template", templateImage)
-	}
-
-	// Add the Claude agent and workspace path
-	absPath, _ := filepath.Abs(opts.WorkspaceDir)
-	args = append(args, "claude", absPath)
-
-	return args, nil
 }
 
 // mergeProfiles combines project and command-line profiles, removing duplicates
@@ -387,13 +378,6 @@ type DockerSandbox struct {
 	Image string
 	// Workspace is the mounted workspace path
 	Workspace string
-}
-
-// VolumeMount represents a single volume mount configuration
-type VolumeMount struct {
-	Source      string
-	Destination string
-	ReadOnly    bool
 }
 
 // FindRunningSandbox finds a running Docker sandbox for the given workspace.
@@ -795,103 +779,3 @@ func RemoveDockerSandboxByName(name string) error {
 	return nil
 }
 
-// GetSandboxMounts retrieves the current volume mounts for a running sandbox.
-// Note: With MicroVM sandboxes, mount introspection is not available via docker inspect.
-// This function returns nil as mount checking is not supported for MicroVM sandboxes.
-func GetSandboxMounts(sandboxID string) ([]VolumeMount, error) {
-	// MicroVM sandboxes don't support docker inspect for mount introspection.
-	// Return nil to indicate no mounts can be retrieved.
-	zlog.Debug("mount introspection not supported for MicroVM sandboxes",
-		zap.String("sandbox_id", sandboxID))
-	return nil, nil
-}
-
-// GetExpectedMounts returns the volume mounts that would be configured for a new sandbox.
-// This parses the buildVolumeMounts output to extract mount specifications.
-func GetExpectedMounts(opts SandboxOptions, claudeMDPath string) ([]VolumeMount, error) {
-	// Create a temporary ClaudeFlags to pass to buildVolumeMounts
-	// We don't actually use the flags here, just need the volume list
-	tempFlags := &ClaudeFlags{}
-	volumeArgs, err := buildVolumeMounts(opts, claudeMDPath, tempFlags)
-	if err != nil {
-		return nil, err
-	}
-
-	var mounts []VolumeMount
-	for i := 0; i < len(volumeArgs); i += 2 {
-		if volumeArgs[i] != "-v" {
-			continue
-		}
-		if i+1 >= len(volumeArgs) {
-			break
-		}
-
-		spec := volumeArgs[i+1]
-		mount, err := parseVolumeMount(spec)
-		if err != nil {
-			continue
-		}
-		mounts = append(mounts, mount)
-	}
-
-	return mounts, nil
-}
-
-// parseVolumeMount parses a volume mount specification like "host:container:ro"
-func parseVolumeMount(spec string) (VolumeMount, error) {
-	parts := strings.Split(spec, ":")
-
-	if len(parts) < 2 {
-		return VolumeMount{}, fmt.Errorf("invalid volume spec: %s", spec)
-	}
-
-	mount := VolumeMount{
-		Source:      parts[0],
-		Destination: parts[1],
-		ReadOnly:    false,
-	}
-
-	if len(parts) >= 3 && parts[2] == "ro" {
-		mount.ReadOnly = true
-	}
-
-	return mount, nil
-}
-
-// MountMismatch represents a difference between expected and actual mounts
-type MountMismatch struct {
-	// Missing mounts that should exist but don't
-	Missing []VolumeMount
-	// Extra mounts that exist but shouldn't (usually not a problem)
-	Extra []VolumeMount
-}
-
-// BrokenMount represents a mount whose source path no longer exists or is a broken symlink
-type BrokenMount struct {
-	VolumeMount
-	// Reason describes why the mount is broken (e.g., "file not found", "broken symlink")
-	Reason string
-}
-
-// CheckMountMismatch compares expected mounts with actual sandbox mounts.
-// Note: With MicroVM sandboxes, mount introspection is not available.
-// This function returns nil as mount mismatch checking is not supported for MicroVM sandboxes.
-func CheckMountMismatch(sandboxID string, expectedMounts []VolumeMount) (*MountMismatch, error) {
-	// MicroVM sandboxes don't support mount introspection via docker inspect.
-	// Return nil to indicate no mismatch can be detected.
-	zlog.Debug("mount mismatch checking not supported for MicroVM sandboxes",
-		zap.String("sandbox_id", sandboxID))
-	return nil, nil
-}
-
-// CheckBrokenMounts checks if any of the sandbox's configured mounts have source paths
-// that no longer exist or are broken symlinks.
-// Note: With MicroVM sandboxes, mount introspection is not available.
-// This function returns nil as broken mount checking is not supported for MicroVM sandboxes.
-func CheckBrokenMounts(sandboxID string) ([]BrokenMount, error) {
-	// MicroVM sandboxes don't support mount introspection via docker inspect.
-	// Return nil to indicate no broken mounts can be detected.
-	zlog.Debug("broken mount checking not supported for MicroVM sandboxes",
-		zap.String("sandbox_id", sandboxID))
-	return nil, nil
-}

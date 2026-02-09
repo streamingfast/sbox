@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -147,6 +146,14 @@ func runE(cmd *cobra.Command, args []string) error {
 	if recreate {
 		// Remove existing sandbox so a fresh one is created
 		if existingSandbox != nil {
+			// Save .claude cache before removing (for persistence across recreate)
+			if existingSandbox.Status == "running" {
+				if err := backend.SaveCache(workspaceDir); err != nil {
+					zlog.Warn("failed to save cache", zap.Error(err))
+					// Non-fatal - continue with recreate
+				}
+			}
+
 			cmd.Printf("Removing existing sandbox '%s' (%s)...\n", existingSandbox.Name, existingSandbox.ID)
 			if err := sbox.RemoveDockerSandbox(existingSandbox.ID); err != nil {
 				return fmt.Errorf("failed to remove existing sandbox: %w", err)
@@ -162,37 +169,6 @@ func runE(cmd *cobra.Command, args []string) error {
 				zlog.Debug("failed to remove sandbox by name (may not exist)", zap.Error(err))
 			} else {
 				cmd.Println("Existing sandbox removed")
-			}
-		}
-	}
-
-	if existingSandbox != nil {
-		// Check for broken mounts that would prevent the sandbox from starting
-		brokenMounts, err := sbox.CheckBrokenMounts(existingSandbox.ID)
-		if err != nil {
-			zlog.Debug("failed to check broken mounts", zap.Error(err))
-		} else if len(brokenMounts) > 0 {
-			cmd.Println()
-			cmd.Println("WARNING: Sandbox has broken mount configurations that will prevent it from starting:")
-			for _, m := range brokenMounts {
-				cmd.Printf("  - %s -> %s\n", m.Source, m.Destination)
-				cmd.Printf("    Reason: %s\n", m.Reason)
-			}
-			cmd.Println()
-			answeredYes, _ := AskConfirmation("Recreate sandbox to fix broken mounts?")
-			if answeredYes {
-				cmd.Printf("Removing stale sandbox %s...\n", existingSandbox.ID)
-				if err := sbox.RemoveDockerSandbox(existingSandbox.ID); err != nil {
-					return fmt.Errorf("failed to remove stale sandbox: %w", err)
-				}
-				cmd.Println("Stale sandbox removed, a new one will be created")
-			} else {
-				cmd.Println("Continuing with existing sandbox...")
-			}
-		} else {
-			// Check for mount mismatches and warn
-			if err := checkAndWarnMountMismatch(cmd, workspaceDir, existingSandbox, config, projectConfig); err != nil {
-				zlog.Debug("failed to check mount mismatch", zap.Error(err))
 			}
 		}
 	}
@@ -221,83 +197,4 @@ func runE(cmd *cobra.Command, args []string) error {
 	return backend.Run(opts)
 }
 
-// checkAndWarnMountMismatch checks if the running sandbox has different mounts than expected
-// and warns the user if there's a mismatch
-func checkAndWarnMountMismatch(cmd *cobra.Command, workspaceDir string, sandbox *sbox.DockerSandbox, config *sbox.Config, projectConfig *sbox.ProjectConfig) error {
-	// Find the running container to inspect mounts
-	container, err := sbox.FindRunningSandbox(workspaceDir)
-	if err != nil || container == nil {
-		// Not running or can't find - no mismatch to warn about
-		return nil
-	}
 
-	// Prepare CLAUDE.md for mount comparison
-	claudeMDPath, err := sbox.PrepareMDForSandbox(workspaceDir)
-	if err != nil {
-		return fmt.Errorf("failed to prepare CLAUDE.md: %w", err)
-	}
-
-	// Build expected mounts
-	opts := sbox.SandboxOptions{
-		WorkspaceDir:  workspaceDir,
-		Config:        config,
-		ProjectConfig: projectConfig,
-	}
-
-	expectedMounts, err := sbox.GetExpectedMounts(opts, claudeMDPath)
-	if err != nil {
-		return fmt.Errorf("failed to get expected mounts: %w", err)
-	}
-
-	// Check for mismatches
-	mismatch, err := sbox.CheckMountMismatch(container.ID, expectedMounts)
-	if err != nil {
-		return fmt.Errorf("failed to check mount mismatch: %w", err)
-	}
-
-	if mismatch != nil && len(mismatch.Missing) > 0 {
-		cmd.Println()
-		cmd.Println("WARNING: Sandbox mount configuration has changed.")
-		cmd.Println("The following mounts are missing from the running sandbox:")
-		for _, m := range mismatch.Missing {
-			roStr := ""
-			if m.ReadOnly {
-				roStr = " (read-only)"
-			}
-			cmd.Printf("  - %s -> %s%s\n", m.Source, m.Destination, roStr)
-		}
-		cmd.Println()
-		cmd.Println("Docker sandboxes remember their initial mount configuration.")
-		cmd.Println("To apply new mounts, use: sbox run --recreate")
-		cmd.Println()
-	}
-
-	return nil
-}
-
-// formatDockerCommand formats docker command arguments for display.
-// Long arguments (like JSON) are truncated for readability.
-func formatDockerCommand(args []string) string {
-	var result []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-
-		// Check if this is a flag that takes a value
-		if strings.HasPrefix(arg, "--") && i+1 < len(args) {
-			nextArg := args[i+1]
-			// Truncate very long values (like JSON)
-			if len(nextArg) > 80 {
-				nextArg = nextArg[:77] + "..."
-			}
-			// Quote values with spaces
-			if strings.Contains(nextArg, " ") {
-				nextArg = fmt.Sprintf("%q", nextArg)
-			}
-			result = append(result, arg, nextArg)
-			i++ // Skip the next arg since we already processed it
-		} else {
-			result = append(result, arg)
-		}
-	}
-	return strings.Join(result, " ")
-}

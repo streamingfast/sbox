@@ -9,10 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"go.uber.org/zap"
 )
+
+// DockerSocketEnvVar is the environment variable to override the Docker socket path
+const DockerSocketEnvVar = "SBOX_DOCKER_SOCKET"
 
 // ContainerBackend implements the Backend interface using standard Docker containers
 type ContainerBackend struct {
@@ -156,7 +160,13 @@ func (b *ContainerBackend) buildRunArgs(containerName, workspaceDir, image, volu
 
 	// Mount Docker socket if requested
 	if opts.MountDockerSocket {
-		args = append(args, "-v", "/var/run/docker.sock:/var/run/docker.sock")
+		socketPath := getDockerSocketPath()
+		if socketPath != "" {
+			args = append(args, "-v", fmt.Sprintf("%s:/var/run/docker.sock", socketPath))
+			zlog.Debug("mounting docker socket", zap.String("host_path", socketPath))
+		} else {
+			zlog.Warn("docker socket requested but no socket found")
+		}
 	}
 
 	// Mount additional volumes from project config
@@ -531,4 +541,77 @@ func (b *ContainerBackend) RemoveVolume(workspaceDir string) error {
 	}
 
 	return nil
+}
+
+// Cleanup removes all backend-specific resources for a workspace
+func (b *ContainerBackend) Cleanup(workspaceDir string) error {
+	absPath, err := filepath.Abs(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// Remove .sbox directory
+	sboxDir := filepath.Join(absPath, ".sbox")
+	if err := os.RemoveAll(sboxDir); err != nil {
+		zlog.Warn("failed to remove .sbox directory", zap.String("path", sboxDir), zap.Error(err))
+		// Continue to remove volume
+	} else {
+		zlog.Info(".sbox directory removed", zap.String("path", sboxDir))
+	}
+
+	// Remove persistence volume
+	if err := b.RemoveVolume(workspaceDir); err != nil {
+		zlog.Warn("failed to remove persistence volume", zap.Error(err))
+		// Non-fatal - volume might not exist
+	}
+
+	return nil
+}
+
+// SaveCache is a no-op for container backend - uses named volumes for persistence
+func (b *ContainerBackend) SaveCache(workspaceDir string) error {
+	// Container backend uses named volumes mounted at /home/agent/.claude
+	// which automatically persists across container restarts
+	zlog.Debug("container backend uses volumes, no cache save needed")
+	return nil
+}
+
+// getDockerSocketPath returns the Docker socket path to mount.
+// Priority:
+//  1. SBOX_DOCKER_SOCKET environment variable (explicit override)
+//  2. Platform-specific default paths
+func getDockerSocketPath() string {
+	// Check for explicit override
+	if envPath := os.Getenv(DockerSocketEnvVar); envPath != "" {
+		if _, err := os.Stat(envPath); err == nil {
+			return envPath
+		}
+		zlog.Warn("SBOX_DOCKER_SOCKET path does not exist", zap.String("path", envPath))
+	}
+
+	// Platform-specific defaults
+	var candidates []string
+	switch runtime.GOOS {
+	case "darwin":
+		// macOS: Docker Desktop uses different locations
+		homeDir, _ := os.UserHomeDir()
+		if homeDir != "" {
+			candidates = append(candidates, filepath.Join(homeDir, ".docker", "run", "docker.sock"))
+		}
+		candidates = append(candidates, "/var/run/docker.sock")
+	case "linux":
+		candidates = []string{"/var/run/docker.sock"}
+	default:
+		// Fallback for other platforms
+		candidates = []string{"/var/run/docker.sock"}
+	}
+
+	// Return first existing socket
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	return ""
 }

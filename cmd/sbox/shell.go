@@ -1,13 +1,9 @@
 package main
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	. "github.com/streamingfast/cli"
-	"github.com/streamingfast/sbox"
 	"go.uber.org/zap"
 )
 
@@ -32,47 +28,12 @@ var ShellCommand = Command(shellE,
 
 // shellE opens a shell in the running sandbox/container
 func shellE(cmd *cobra.Command, args []string) error {
-	// Get workspace directory
-	workspaceDir, err := cmd.Flags().GetString("workspace")
+	ctx, err := LoadWorkspaceContext(cmd)
 	if err != nil {
-		return fmt.Errorf("failed to get workspace flag: %w", err)
-	}
-	if workspaceDir == "" {
-		workspaceDir, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("failed to get current directory: %w", err)
-		}
+		return err
 	}
 
-	// Load configs to resolve backend type
-	config, err := sbox.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
+	zlog.Debug("resolved backend type", zap.String("backend", string(ctx.BackendType)))
 
-	projectConfig, _, err := sbox.GetProjectConfig(workspaceDir)
-	if err != nil {
-		return fmt.Errorf("failed to load project config: %w", err)
-	}
-
-	sboxFile, err := sbox.FindSboxFile(workspaceDir)
-	if err != nil {
-		return fmt.Errorf("failed to load sbox.yaml file: %w", err)
-	}
-
-	projectConfig, err = sbox.MergeProjectConfig(projectConfig, sboxFile)
-	if err != nil {
-		return fmt.Errorf("failed to merge sbox.yaml config: %w", err)
-	}
-
-	// Resolve backend type from project configuration
-	backendType := sbox.ResolveBackendType("", sboxFile, projectConfig, config)
-	zlog.Debug("resolved backend type", zap.String("backend", string(backendType)))
-
-	backend, err := sbox.GetBackend(string(backendType), config)
-	if err != nil {
-		return fmt.Errorf("failed to get backend: %w", err)
-	}
-
-	return backend.Shell(workspaceDir)
+	return ctx.Backend.Shell(ctx.WorkspaceDir)
 }

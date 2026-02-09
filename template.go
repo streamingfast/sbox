@@ -209,6 +209,10 @@ func (tb *TemplateBuilder) GenerateDockerfile(targetArch *TargetArch) (string, e
 	sb.WriteString("# Switch to root to install sbox and packages\n")
 	sb.WriteString("USER root\n\n")
 
+	// Install rsync for claude cache synchronization
+	sb.WriteString("# Install rsync for cache synchronization\n")
+	sb.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends rsync && rm -rf /var/lib/apt/lists/*\n\n")
+
 	// Copy sbox binary
 	if tb.isDevMode() {
 		sb.WriteString("# Copy sbox binary (dev mode - from build context)\n")

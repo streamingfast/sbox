@@ -295,3 +295,25 @@ func (b *SandboxBackend) Remove(containerID string) error {
 	return RemoveDockerSandbox(containerID)
 }
 
+// Cleanup removes all backend-specific resources for a workspace
+func (b *SandboxBackend) Cleanup(workspaceDir string) error {
+	absPath, err := filepath.Abs(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// Remove .sbox directory
+	sboxDir := filepath.Join(absPath, ".sbox")
+	if err := os.RemoveAll(sboxDir); err != nil {
+		return fmt.Errorf("failed to remove .sbox directory: %w", err)
+	}
+
+	zlog.Info(".sbox directory removed", zap.String("path", sboxDir))
+	return nil
+}
+
+// SaveCache saves the .claude state to .sbox/claude-cache/ for persistence
+func (b *SandboxBackend) SaveCache(workspaceDir string) error {
+	return SaveClaudeCache(workspaceDir, b)
+}
+

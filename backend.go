@@ -20,6 +20,18 @@ const DefaultBackend = BackendSandbox
 // ValidBackendTypes contains all valid backend type values
 var ValidBackendTypes = []BackendType{BackendSandbox, BackendContainer}
 
+// Capitalize returns a capitalized display name for the backend type.
+func (bt BackendType) Capitalize() string {
+	switch bt {
+	case BackendSandbox:
+		return "Sandbox"
+	case BackendContainer:
+		return "Container"
+	default:
+		return string(bt)
+	}
+}
+
 // ValidateBackend checks if a backend name is valid
 func ValidateBackend(name string) error {
 	switch BackendType(name) {
@@ -101,6 +113,15 @@ type Backend interface {
 
 	// Remove removes a container by ID
 	Remove(containerID string) error
+
+	// Cleanup removes all backend-specific resources for a workspace
+	// (e.g., .sbox directory, persistence volumes)
+	Cleanup(workspaceDir string) error
+
+	// SaveCache saves the .claude state for persistence across recreations.
+	// For sandbox backend, copies to .sbox/claude-cache/.
+	// For container backend, this is a no-op (uses named volumes).
+	SaveCache(workspaceDir string) error
 }
 
 // GetBackend returns the appropriate backend implementation based on the backend type.

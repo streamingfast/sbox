@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -38,50 +37,15 @@ var StopCommand = Command(stopE,
 
 // stopE stops the running sandbox/container for the current project
 func stopE(cmd *cobra.Command, args []string) error {
-	// Get workspace directory
-	workspaceDir, err := cmd.Flags().GetString("workspace")
+	ctx, err := LoadWorkspaceContext(cmd)
 	if err != nil {
-		return fmt.Errorf("failed to get workspace flag: %w", err)
+		return err
 	}
-	if workspaceDir == "" {
-		workspaceDir, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("failed to get current directory: %w", err)
-		}
-	}
+
+	zlog.Debug("resolved backend type", zap.String("backend", string(ctx.BackendType)))
 
 	removeSandbox, _ := cmd.Flags().GetBool("rm")
 	removeAll, _ := cmd.Flags().GetBool("all")
-
-	// Load configs to resolve backend type
-	config, err := sbox.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	projectConfig, _, err := sbox.GetProjectConfig(workspaceDir)
-	if err != nil {
-		return fmt.Errorf("failed to load project config: %w", err)
-	}
-
-	sboxFile, err := sbox.FindSboxFile(workspaceDir)
-	if err != nil {
-		return fmt.Errorf("failed to load sbox.yaml file: %w", err)
-	}
-
-	projectConfig, err = sbox.MergeProjectConfig(projectConfig, sboxFile)
-	if err != nil {
-		return fmt.Errorf("failed to merge sbox.yaml config: %w", err)
-	}
-
-	// Resolve backend type from project configuration
-	backendType := sbox.ResolveBackendType("", sboxFile, projectConfig, config)
-	zlog.Debug("resolved backend type", zap.String("backend", string(backendType)))
-
-	backend, err := sbox.GetBackend(string(backendType), config)
-	if err != nil {
-		return fmt.Errorf("failed to get backend: %w", err)
-	}
 
 	// --all requires --rm
 	if removeAll && !removeSandbox {
@@ -91,62 +55,57 @@ func stopE(cmd *cobra.Command, args []string) error {
 	// --all asks for confirmation
 	if removeAll {
 		extraInfo := ""
-		if backendType == sbox.BackendContainer {
+		if ctx.BackendType == sbox.BackendContainer {
 			extraInfo = " and persistence volume"
 		}
-		answeredYes, _ := AskConfirmation("This will remove the Docker %s%s AND all project configuration for %s. Continue?", backend.Name(), extraInfo, workspaceDir)
+		answeredYes, _ := AskConfirmation("This will remove the Docker %s%s AND all project configuration for %s. Continue?", ctx.Backend.Name(), extraInfo, ctx.WorkspaceDir)
 		if !answeredYes {
 			cmd.Println("Aborted.")
 			return nil
 		}
 	}
 
+	// Save .claude cache before stopping (for persistence across recreations)
+	// Skip if --rm is set (resources are being removed, no point caching)
+	if !removeSandbox {
+		if err := ctx.Backend.SaveCache(ctx.WorkspaceDir); err != nil {
+			zlog.Warn("failed to save cache", zap.Error(err))
+			// Non-fatal - continue with stop
+		}
+	}
+
 	// Stop the sandbox/container (and remove if --rm is set)
-	info, err := backend.Stop(workspaceDir, removeSandbox)
+	info, err := ctx.Backend.Stop(ctx.WorkspaceDir, removeSandbox)
 	if err != nil {
-		return fmt.Errorf("failed to stop %s: %w", backend.Name(), err)
+		return fmt.Errorf("failed to stop %s: %w", ctx.Backend.Name(), err)
 	}
 
 	if info != nil {
-		cmd.Printf("%s stopped: %s (%s)\n", capitalizeBackend(backend.Name()), info.Name, info.ID[:12])
+		cmd.Printf("%s stopped: %s (%s)\n", ctx.BackendType.Capitalize(), info.Name, info.ID[:12])
 		if removeSandbox {
-			cmd.Printf("%s removed: %s\n", capitalizeBackend(backend.Name()), info.Name)
+			cmd.Printf("%s removed: %s\n", ctx.BackendType.Capitalize(), info.Name)
 		}
 	} else {
-		cmd.Printf("No %s was running for this project\n", backend.Name())
+		cmd.Printf("No %s was running for this project\n", ctx.Backend.Name())
 	}
 
-	// For container backend with --all, also remove the persistence volume
-	if removeAll && backendType == sbox.BackendContainer {
-		if containerBackend, ok := backend.(*sbox.ContainerBackend); ok {
-			if err := containerBackend.RemoveVolume(workspaceDir); err != nil {
-				zlog.Warn("failed to remove persistence volume", zap.Error(err))
-				// Non-fatal - volume might not exist
-			} else {
-				cmd.Println("Persistence volume removed")
-			}
+	// When --rm is set, clean up associated resources
+	if removeSandbox {
+		if err := ctx.Backend.Cleanup(ctx.WorkspaceDir); err != nil {
+			zlog.Warn("cleanup failed", zap.Error(err))
+			// Non-fatal
+		} else {
+			cmd.Println("Workspace resources cleaned up")
 		}
 	}
 
 	// Remove project config data only if --all was specified
 	if removeAll {
-		if err := sbox.RemoveProjectData(workspaceDir); err != nil {
+		if err := sbox.RemoveProjectData(ctx.WorkspaceDir); err != nil {
 			return fmt.Errorf("failed to remove project data: %w", err)
 		}
 		cmd.Println("Project configuration removed")
 	}
 
 	return nil
-}
-
-// capitalizeBackend returns a capitalized version of the backend name for display
-func capitalizeBackend(bt sbox.BackendType) string {
-	switch bt {
-	case sbox.BackendSandbox:
-		return "Sandbox"
-	case sbox.BackendContainer:
-		return "Container"
-	default:
-		return string(bt)
-	}
 }

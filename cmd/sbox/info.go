@@ -49,16 +49,9 @@ func infoE(cmd *cobra.Command, args []string) error {
 
 // infoCurrentProject shows information for the current project
 func infoCurrentProject(cmd *cobra.Command) error {
-	// Get workspace directory
-	workspaceDir, err := cmd.Flags().GetString("workspace")
+	workspaceDir, err := getWorkspaceDir(cmd)
 	if err != nil {
-		return fmt.Errorf("failed to get workspace flag: %w", err)
-	}
-	if workspaceDir == "" {
-		workspaceDir, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("failed to get current directory: %w", err)
-		}
+		return err
 	}
 
 	// Check if this workspace is a known project
@@ -130,16 +123,14 @@ func infoCurrentProject(cmd *cobra.Command) error {
 		cmd.Printf("  Docker:   %s\n", project.Config.DockerSocket)
 	}
 
-	// Build and display the docker command (only for sandbox backend)
+	// Build and display the docker commands (only for sandbox backend)
 	if backendType == sbox.BackendSandbox {
 		opts := sbox.SandboxOptions{
 			WorkspaceDir:  workspaceDir,
 			Config:        config,
 			ProjectConfig: project.Config,
 		}
-		if dockerArgs, err := sbox.BuildDockerCommand(opts); err == nil {
-			cmd.Printf("  Command:\n    docker %s\n", formatDockerCommand(dockerArgs))
-		}
+		printSandboxCommands(cmd, opts, "  ")
 	}
 
 	return nil
@@ -157,6 +148,9 @@ func infoAllProjects(cmd *cobra.Command) error {
 		cmd.Println("Run 'sbox' or 'sbox run' in a directory to create a project.")
 		return nil
 	}
+
+	// Load global config once for all projects
+	globalConfig, _ := sbox.LoadConfig()
 
 	cmd.Println("Known projects:")
 	cmd.Println()
@@ -177,9 +171,9 @@ func infoAllProjects(cmd *cobra.Command) error {
 
 		// Resolve backend type for this project
 		var projectBackendType sbox.BackendType = sbox.BackendSandbox
+		var projectSboxFile *sbox.SboxFileLocation
 		if workspacePath != "" {
-			globalConfig, _ := sbox.LoadConfig()
-			projectSboxFile, _ := sbox.FindSboxFile(workspacePath)
+			projectSboxFile, _ = sbox.FindSboxFile(workspacePath)
 			projectBackendType = sbox.ResolveBackendType("", projectSboxFile, project.Config, globalConfig)
 		}
 
@@ -188,7 +182,6 @@ func infoAllProjects(cmd *cobra.Command) error {
 		cmd.Printf("    Backend: %s\n", projectBackendType)
 
 		if workspacePath != "" {
-			globalConfig, _ := sbox.LoadConfig()
 			backend, _ := sbox.GetBackend(string(projectBackendType), globalConfig)
 			if backend != nil {
 				printContainerStatus(cmd, workspacePath, project.Config.SandboxName, backend, "    ")
@@ -207,13 +200,8 @@ func infoAllProjects(cmd *cobra.Command) error {
 			cmd.Printf("    Volumes:  %v\n", project.Config.Volumes)
 		}
 		// Show merged envs with sources
-		{
-			globalConfig, err := sbox.LoadConfig()
-			var globalEnvs []string
-			if err == nil {
-				globalEnvs = globalConfig.Envs
-			}
-			_, resolved := sbox.MergeEnvs(globalEnvs, project.Config.Envs, nil)
+		if globalConfig != nil {
+			_, resolved := sbox.MergeEnvs(globalConfig.Envs, project.Config.Envs, nil)
 			if len(resolved) > 0 {
 				cmd.Printf("    Envs:\n")
 				printResolvedEnvs(cmd, resolved, "      ")
@@ -223,20 +211,15 @@ func infoAllProjects(cmd *cobra.Command) error {
 			cmd.Printf("    Docker:   %s\n", project.Config.DockerSocket)
 		}
 
-		// Build and display the docker command if workspace exists (only for sandbox backend)
-		if workspacePath != "" && projectBackendType == sbox.BackendSandbox {
+		// Build and display the docker commands if workspace exists (only for sandbox backend)
+		if workspacePath != "" && projectBackendType == sbox.BackendSandbox && globalConfig != nil {
 			if _, err := os.Stat(workspacePath); err == nil {
-				config, err := sbox.LoadConfig()
-				if err == nil {
-					opts := sbox.SandboxOptions{
-						WorkspaceDir:  workspacePath,
-						Config:        config,
-						ProjectConfig: project.Config,
-					}
-					if dockerArgs, err := sbox.BuildDockerCommand(opts); err == nil {
-						cmd.Printf("    Command:\n    docker %s\n", formatDockerCommand(dockerArgs))
-					}
+				opts := sbox.SandboxOptions{
+					WorkspaceDir:  workspacePath,
+					Config:        globalConfig,
+					ProjectConfig: project.Config,
 				}
+				printSandboxCommands(cmd, opts, "    ")
 			}
 		}
 		cmd.Println()
@@ -288,4 +271,16 @@ func printContainerStatus(cmd *cobra.Command, workspaceDir string, containerName
 	}
 
 	cmd.Printf("%s  Status: not created\n", prefix)
+}
+
+// printSandboxCommands prints the docker sandbox create and run commands.
+func printSandboxCommands(cmd *cobra.Command, opts sbox.SandboxOptions, prefix string) {
+	commands, err := sbox.BuildSandboxCommands(opts)
+	if err != nil {
+		return
+	}
+
+	cmd.Printf("%sCommands:\n", prefix)
+	cmd.Printf("%s  docker %s\n", prefix, formatDockerCommand(commands.CreateArgs))
+	cmd.Printf("%s  docker %s\n", prefix, formatDockerCommand(commands.RunArgs))
 }
