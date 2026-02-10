@@ -104,6 +104,14 @@ RUN apt-get update && apt-get install -y curl unzip && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 `,
 	},
+	"javascript": {
+		Name:        "javascript",
+		Description: "JavaScript/TypeScript development tools (pnpm, yarn)",
+		DockerfileSnippet: `# JavaScript package managers (pnpm, yarn)
+# Note: Node.js and npm are already installed in the base image
+RUN npm install -g pnpm yarn
+`,
+	},
 }
 
 // GetProfile retrieves a profile by name

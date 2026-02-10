@@ -783,20 +783,21 @@ func copyFile(src, dst string) error {
 // PrepareSboxDirectory populates the .sbox/ directory in the workspace with
 // plugins, agents, env vars, CLAUDE.md, and the entrypoint config. This is called by
 // `sbox run` before starting the sandbox.
-func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, projectEnvs, sboxFileEnvs []string) error {
+func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, projectEnvs, sboxFileEnvs []string, backend BackendType) error {
 	sboxDir := filepath.Join(workspaceDir, ".sbox")
 
 	zlog.Info("preparing .sbox directory",
 		zap.String("workspace", workspaceDir),
-		zap.String("sbox_dir", sboxDir))
+		zap.String("sbox_dir", sboxDir),
+		zap.String("backend", string(backend)))
 
 	// Create .sbox directory
 	if err := os.MkdirAll(sboxDir, 0755); err != nil {
 		return fmt.Errorf("failed to create .sbox directory: %w", err)
 	}
 
-	// Prepare merged CLAUDE.md file
-	if err := prepareCLAUDEMD(workspaceDir, sboxDir); err != nil {
+	// Prepare merged CLAUDE.md file with backend-specific context
+	if err := prepareCLAUDEMD(workspaceDir, sboxDir, backend); err != nil {
 		zlog.Warn("failed to prepare CLAUDE.md", zap.Error(err))
 		// Continue - CLAUDE.md is optional
 	}
@@ -1110,9 +1111,10 @@ func restoreClaudeCache(workspaceDir, claudeHome string) error {
 
 // prepareCLAUDEMD uses PrepareMDForSandbox to discover and concatenate MD files,
 // then copies the result to .sbox/CLAUDE.md
-func prepareCLAUDEMD(workspaceDir, sboxDir string) error {
+func prepareCLAUDEMD(workspaceDir, sboxDir string, backend BackendType) error {
 	// Use existing function to discover and concatenate CLAUDE.md and AGENTS.md files
-	srcPath, err := PrepareMDForSandbox(workspaceDir)
+	// with backend-specific context
+	srcPath, err := PrepareMDForSandbox(workspaceDir, backend)
 	if err != nil {
 		return fmt.Errorf("failed to prepare MD files: %w", err)
 	}

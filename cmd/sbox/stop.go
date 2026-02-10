@@ -81,7 +81,12 @@ func stopE(cmd *cobra.Command, args []string) error {
 	}
 
 	if info != nil {
-		cmd.Printf("%s stopped: %s (%s)\n", ctx.BackendType.Capitalize(), info.Name, info.ID[:12])
+		// For sandbox backend, ID and Name are the same, so don't show redundant ID
+		if info.ID != info.Name {
+			cmd.Printf("%s stopped: %s (%s)\n", ctx.BackendType.Capitalize(), info.Name, info.ID[:12])
+		} else {
+			cmd.Printf("%s stopped: %s\n", ctx.BackendType.Capitalize(), info.Name)
+		}
 		if removeSandbox {
 			cmd.Printf("%s removed: %s\n", ctx.BackendType.Capitalize(), info.Name)
 		}

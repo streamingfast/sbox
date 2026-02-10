@@ -70,7 +70,7 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 	if opts.SboxFile != nil && opts.SboxFile.Config != nil {
 		sboxFileEnvs = opts.SboxFile.Config.Envs
 	}
-	if err := PrepareSboxDirectory(absPath, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs); err != nil {
+	if err := PrepareSboxDirectory(absPath, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendContainer); err != nil {
 		return fmt.Errorf("failed to prepare .sbox directory: %w", err)
 	}
 

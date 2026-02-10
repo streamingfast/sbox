@@ -63,15 +63,30 @@ func DiscoverMDFiles(startDir string) ([]string, error) {
 }
 
 // ConcatenateMDFiles reads and concatenates the specified MD files with
-// delimiters showing the source path of each file
-func ConcatenateMDFiles(files []string) (string, error) {
-	if len(files) == 0 {
-		return "", nil
-	}
-
+// delimiters showing the source path of each file. The embedded backend-specific
+// context instructions are prepended to help Claude understand its environment.
+func ConcatenateMDFiles(files []string, backend BackendType) (string, error) {
 	var sb strings.Builder
 
-	for i, filePath := range files {
+	// Get backend-specific context
+	contextMD := GetBackendContextMD(backend)
+
+	// Prepend embedded backend context instructions
+	sb.WriteString("# ==================================================\n")
+	sb.WriteString(fmt.Sprintf("# Source: sbox (embedded %s backend instructions)\n", backend))
+	sb.WriteString("# ==================================================\n\n")
+	sb.WriteString(contextMD)
+	if len(contextMD) > 0 && contextMD[len(contextMD)-1] != '\n' {
+		sb.WriteString("\n")
+	}
+
+	zlog.Debug("prepended backend context", zap.String("backend", string(backend)), zap.Int("bytes", len(contextMD)))
+
+	if len(files) == 0 {
+		return sb.String(), nil
+	}
+
+	for _, filePath := range files {
 		// Read file content
 		content, err := os.ReadFile(filePath)
 		if err != nil {
@@ -79,9 +94,7 @@ func ConcatenateMDFiles(files []string) (string, error) {
 		}
 
 		// Add separator and source path
-		if i > 0 {
-			sb.WriteString("\n\n")
-		}
+		sb.WriteString("\n\n")
 		sb.WriteString("# ==================================================\n")
 		sb.WriteString(fmt.Sprintf("# Source: %s\n", filePath))
 		sb.WriteString("# ==================================================\n\n")
@@ -122,9 +135,9 @@ func ProjectHash(workspaceDir string) (string, error) {
 }
 
 // PrepareMDForSandbox discovers all CLAUDE.md and AGENTS.md files in the
-// workspace directory hierarchy, concatenates them, and writes the result
-// to a per-project location: ~/.config/sbox/projects/<hash>/claude.md
-func PrepareMDForSandbox(workspaceDir string) (string, error) {
+// workspace directory hierarchy, concatenates them with backend-specific context,
+// and writes the result to a per-project location: ~/.config/sbox/projects/<hash>/claude.md
+func PrepareMDForSandbox(workspaceDir string, backend BackendType) (string, error) {
 	// Compute project hash
 	projectHash, err := ProjectHash(workspaceDir)
 	if err != nil {
@@ -137,8 +150,8 @@ func PrepareMDForSandbox(workspaceDir string) (string, error) {
 		return "", fmt.Errorf("failed to discover MD files: %w", err)
 	}
 
-	// Concatenate files
-	content, err := ConcatenateMDFiles(files)
+	// Concatenate files with backend-specific context
+	content, err := ConcatenateMDFiles(files, backend)
 	if err != nil {
 		return "", fmt.Errorf("failed to concatenate MD files: %w", err)
 	}

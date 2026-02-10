@@ -130,47 +130,48 @@ func TestConcatenateMDFiles(t *testing.T) {
 	file1 := filepath.Join(tempDir, "file1.md")
 	file2 := filepath.Join(tempDir, "file2.md")
 
-	if err := os.WriteFile(file1, []byte("Content 1"), 0644); err != nil {
-		t.Fatalf("Failed to create file1: %v", err)
-	}
-	if err := os.WriteFile(file2, []byte("Content 2"), 0644); err != nil {
-		t.Fatalf("Failed to create file2: %v", err)
-	}
+	require.NoError(t, os.WriteFile(file1, []byte("Content 1"), 0644))
+	require.NoError(t, os.WriteFile(file2, []byte("Content 2"), 0644))
 
-	// Test concatenation
-	result, err := ConcatenateMDFiles([]string{file1, file2})
-	if err != nil {
-		t.Fatalf("ConcatenateMDFiles error = %v", err)
-	}
+	// Test concatenation with sandbox backend
+	result, err := ConcatenateMDFiles([]string{file1, file2}, BackendSandbox)
+	require.NoError(t, err)
+	assert.NotEmpty(t, result)
 
-	// Check that result contains both contents and source markers
-	if result == "" {
-		t.Error("ConcatenateMDFiles returned empty string")
-	}
+	// Embedded sandbox backend context should be first
+	assert.Contains(t, result, "sbox (embedded sandbox backend instructions)")
+	assert.Contains(t, result, "Docker Sandbox Backend")
 
-	// Check for source markers
-	if !containsString(result, "Source: "+file1) {
-		t.Errorf("ConcatenateMDFiles result missing source marker for %s", file1)
-	}
-	if !containsString(result, "Source: "+file2) {
-		t.Errorf("ConcatenateMDFiles result missing source marker for %s", file2)
-	}
-	if !containsString(result, "Content 1") {
-		t.Error("ConcatenateMDFiles result missing Content 1")
-	}
-	if !containsString(result, "Content 2") {
-		t.Error("ConcatenateMDFiles result missing Content 2")
-	}
+	// Check for source markers and content
+	assert.Contains(t, result, "Source: "+file1)
+	assert.Contains(t, result, "Source: "+file2)
+	assert.Contains(t, result, "Content 1")
+	assert.Contains(t, result, "Content 2")
+}
+
+func TestConcatenateMDFiles_ContainerBackend(t *testing.T) {
+	tempDir := t.TempDir()
+
+	file1 := filepath.Join(tempDir, "file1.md")
+	require.NoError(t, os.WriteFile(file1, []byte("Content 1"), 0644))
+
+	// Test concatenation with container backend
+	result, err := ConcatenateMDFiles([]string{file1}, BackendContainer)
+	require.NoError(t, err)
+
+	// Should have container backend context
+	assert.Contains(t, result, "sbox (embedded container backend instructions)")
+	assert.Contains(t, result, "Docker Container Backend")
+	assert.Contains(t, result, "Content 1")
 }
 
 func TestConcatenateMDFiles_Empty(t *testing.T) {
-	result, err := ConcatenateMDFiles([]string{})
-	if err != nil {
-		t.Fatalf("ConcatenateMDFiles error = %v", err)
-	}
-	if result != "" {
-		t.Errorf("ConcatenateMDFiles([]) = %q, want empty string", result)
-	}
+	result, err := ConcatenateMDFiles([]string{}, BackendSandbox)
+	require.NoError(t, err)
+
+	// Even with no files, we should have the embedded backend context
+	assert.Contains(t, result, "sbox (embedded sandbox backend instructions)")
+	assert.Contains(t, result, "Docker Sandbox Backend")
 }
 
 func TestLoadConfig_Defaults(t *testing.T) {
@@ -320,41 +321,63 @@ func TestPrepareMDForSandbox(t *testing.T) {
 
 	// Create workspace with CLAUDE.md
 	workspaceDir := filepath.Join(tempDir, "workspace")
-	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
-		t.Fatalf("Failed to create workspace: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(workspaceDir, 0755))
 
 	claudeMD := filepath.Join(workspaceDir, "CLAUDE.md")
-	if err := os.WriteFile(claudeMD, []byte("# Test CLAUDE.md\nSome content"), 0644); err != nil {
-		t.Fatalf("Failed to create CLAUDE.md: %v", err)
-	}
+	require.NoError(t, os.WriteFile(claudeMD, []byte("# Test CLAUDE.md\nSome content"), 0644))
 
-	// Prepare MD for sandbox
-	outputPath, err := PrepareMDForSandbox(workspaceDir)
-	if err != nil {
-		t.Fatalf("PrepareMDForSandbox() error = %v", err)
-	}
+	// Test with sandbox backend
+	outputPath, err := PrepareMDForSandbox(workspaceDir, BackendSandbox)
+	require.NoError(t, err)
 
 	// Check output file exists
-	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-		t.Errorf("PrepareMDForSandbox() output file does not exist: %s", outputPath)
-	}
+	_, err = os.Stat(outputPath)
+	require.NoError(t, err, "output file should exist")
 
 	// Check output path is per-project (contains project hash)
 	projectHash, _ := ProjectHash(workspaceDir)
-	if !containsString(outputPath, projectHash) {
-		t.Errorf("PrepareMDForSandbox() output path %q should contain project hash %q", outputPath, projectHash)
-	}
+	assert.Contains(t, outputPath, projectHash)
 
 	// Read and verify content
 	content, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("Failed to read output file: %v", err)
-	}
+	require.NoError(t, err)
 
-	if !containsString(string(content), "Test CLAUDE.md") {
-		t.Error("Output file missing expected content")
-	}
+	// Should contain user content
+	assert.Contains(t, string(content), "Test CLAUDE.md")
+
+	// Should contain sandbox backend context
+	assert.Contains(t, string(content), "Docker Sandbox Backend")
+	assert.Contains(t, string(content), "MicroVM")
+}
+
+func TestPrepareMDForSandbox_ContainerBackend(t *testing.T) {
+	// Save and restore HOME
+	origHome := os.Getenv("HOME")
+	tempDir := t.TempDir()
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	// Create workspace with CLAUDE.md
+	workspaceDir := filepath.Join(tempDir, "workspace")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0755))
+
+	claudeMD := filepath.Join(workspaceDir, "CLAUDE.md")
+	require.NoError(t, os.WriteFile(claudeMD, []byte("# Test CLAUDE.md\nSome content"), 0644))
+
+	// Test with container backend
+	outputPath, err := PrepareMDForSandbox(workspaceDir, BackendContainer)
+	require.NoError(t, err)
+
+	// Read and verify content
+	content, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+
+	// Should contain user content
+	assert.Contains(t, string(content), "Test CLAUDE.md")
+
+	// Should contain container backend context
+	assert.Contains(t, string(content), "Docker Container Backend")
+	assert.Contains(t, string(content), "--docker-socket")
 }
 
 func containsString(s, substr string) bool {
