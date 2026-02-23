@@ -17,12 +17,12 @@ var ProfileGroup = Group("profile", "Manage development profiles",
 	Command(profileAddE,
 		"add <profiles...>",
 		"Add profiles to the current project",
-		ExactArgs(1),
+		MinimumNArgs(1),
 	),
 	Command(profileRemoveE,
 		"remove <profiles...>",
 		"Remove profiles from the current project",
-		ExactArgs(1),
+		MinimumNArgs(1),
 	),
 )
 
@@ -70,11 +70,11 @@ func profileListE(cmd *cobra.Command, args []string) error {
 
 // profileAddE adds profiles to the current project
 func profileAddE(cmd *cobra.Command, args []string) error {
-	profileName := args[0]
-
-	// Validate profile exists
-	if _, ok := sbox.GetProfile(profileName); !ok {
-		return fmt.Errorf("unknown profile: %s\nAvailable profiles: %v", profileName, sbox.ListProfiles())
+	// Validate all profiles exist first
+	for _, profileName := range args {
+		if _, ok := sbox.GetProfile(profileName); !ok {
+			return fmt.Errorf("unknown profile: %s\nAvailable profiles: %v", profileName, sbox.ListProfiles())
+		}
 	}
 
 	// Get workspace directory
@@ -89,31 +89,40 @@ func profileAddE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load project config: %w", err)
 	}
 
-	// Check if already added
+	// Create a set of existing profiles for quick lookup
+	existingSet := make(map[string]bool)
 	for _, p := range projectConfig.Profiles {
-		if p == profileName {
-			cmd.Printf("Profile '%s' is already added to this project\n", profileName)
-			return nil
-		}
+		existingSet[p] = true
 	}
 
-	// Add profile
-	projectConfig.Profiles = append(projectConfig.Profiles, profileName)
+	// Add each profile
+	added := 0
+	for _, profileName := range args {
+		if existingSet[profileName] {
+			cmd.Printf("Profile '%s' is already added to this project\n", profileName)
+			continue
+		}
+		projectConfig.Profiles = append(projectConfig.Profiles, profileName)
+		existingSet[profileName] = true
+		cmd.Printf("Added profile '%s' to project\n", profileName)
+		added++
+	}
+
+	if added == 0 {
+		return nil
+	}
 
 	// Save project config
 	if err := sbox.SaveProjectConfig(workspaceDir, projectConfig); err != nil {
 		return fmt.Errorf("failed to save project config: %w", err)
 	}
 
-	cmd.Printf("Added profile '%s' to project\n", profileName)
-	cmd.Println("Run 'sbox run --recreate' to rebuild and recreate the sandbox with this profile")
+	cmd.Println("Run 'sbox run --recreate' to rebuild and recreate the sandbox with the new profiles")
 	return nil
 }
 
 // profileRemoveE removes profiles from the current project
 func profileRemoveE(cmd *cobra.Command, args []string) error {
-	profileName := args[0]
-
 	// Get workspace directory
 	workspaceDir, err := os.Getwd()
 	if err != nil {
@@ -126,30 +135,36 @@ func profileRemoveE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load project config: %w", err)
 	}
 
-	// Find and remove profile
-	found := false
-	newProfiles := make([]string, 0, len(projectConfig.Profiles))
+	// Create a set of profiles to remove
+	removeSet := make(map[string]bool)
+	for _, name := range args {
+		removeSet[name] = true
+	}
+
+	// Find and remove profiles
+	var kept []string
+	removed := 0
 	for _, p := range projectConfig.Profiles {
-		if p == profileName {
-			found = true
+		if removeSet[p] {
+			cmd.Printf("Removed profile '%s' from project\n", p)
+			removed++
 		} else {
-			newProfiles = append(newProfiles, p)
+			kept = append(kept, p)
 		}
 	}
 
-	if !found {
-		cmd.Printf("Profile '%s' is not in this project\n", profileName)
+	if removed == 0 {
+		cmd.Println("No matching profiles found in this project")
 		return nil
 	}
 
-	projectConfig.Profiles = newProfiles
+	projectConfig.Profiles = kept
 
 	// Save project config
 	if err := sbox.SaveProjectConfig(workspaceDir, projectConfig); err != nil {
 		return fmt.Errorf("failed to save project config: %w", err)
 	}
 
-	cmd.Printf("Removed profile '%s' from project\n", profileName)
-	cmd.Println("Run 'sbox run --recreate' to rebuild and recreate the sandbox without this profile")
+	cmd.Println("Run 'sbox run --recreate' to rebuild and recreate the sandbox without these profiles")
 	return nil
 }

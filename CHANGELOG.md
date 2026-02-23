@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Treat `.sbox/` directory as read-only (managed by sbox)
   - Use `/tmp/` for temporary clones and downloads to avoid cluttering the workspace
 
+### Changed
+
+- `sbox profile add` and `sbox profile remove` now accept multiple profiles (e.g., `sbox profile add go rust`)
+
 ### Fixed
 
 - `sbox stop --rm` now removes stopped sandboxes/containers (previously only worked on running ones)
