@@ -112,6 +112,30 @@ RUN apt-get update && apt-get install -y curl unzip && \
 RUN npm install -g pnpm yarn
 `,
 	},
+	"firehose": {
+		Name:        "firehose",
+		Description: "Firehose CLI tools (substreams, firecore, fireeth, dummy-blockchain) and grpcurl for blockchain data streaming",
+		DockerfileSnippet: `# Substreams CLI (from official Docker image)
+COPY --from=ghcr.io/streamingfast/substreams:latest /app/substreams /usr/local/bin/substreams
+
+# Firehose Core CLI (from official Docker image)
+COPY --from=ghcr.io/streamingfast/firehose-core:latest /app/firecore /usr/local/bin/firecore
+
+# Firehose Ethereum CLI (from official Docker image)
+COPY --from=ghcr.io/streamingfast/firehose-ethereum:latest /app/fireeth /usr/local/bin/fireeth
+
+# Dummy Blockchain (from official Docker image)
+COPY --from=ghcr.io/streamingfast/dummy-blockchain:latest /app/dummy-blockchain /usr/local/bin/dummy-blockchain
+
+# grpcurl CLI
+RUN apt-get update && apt-get install -y curl && \
+    GRPCURL_VERSION=$(curl -sSL https://api.github.com/repos/fullstorydev/grpcurl/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/') && \
+    curl -sSL "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_${GRPCURL_ARCH}.tar.gz" -o /tmp/grpcurl.tar.gz && \
+    tar -xzf /tmp/grpcurl.tar.gz -C /usr/local/bin grpcurl && \
+    rm /tmp/grpcurl.tar.gz && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+`,
+	},
 }
 
 // GetProfile retrieves a profile by name

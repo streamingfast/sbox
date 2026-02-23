@@ -39,6 +39,28 @@ Additional tools may be available depending on configured profiles.
 - **Network restrictions**: Some external services may be blocked by firewall
 - **Resource limits**: MicroVM has allocated CPU/memory limits
 
+### Important: Protected Directories
+
+- **`.sbox/` directory is READ-ONLY**: This directory is managed by sbox for configuration, caching, and state management. Never write files to `.sbox/` - your changes may be overwritten or cause issues.
+
+### Temporary Files & Cloned Repositories
+
+When you need to clone repositories or download files for temporary reference (e.g., to read documentation, compare implementations, or run one-off scripts):
+
+- **Use `/tmp/` or a subdirectory**: Clone to `/tmp/my-reference-repo/` instead of the workspace
+- **Avoid cluttering the workspace**: The workspace should only contain project-relevant files
+- **Clean up when done**: Remove temporary files after use to free disk space
+
+```bash
+# Good: Clone reference repo to temp directory
+git clone --depth 1 https://github.com/example/repo.git /tmp/reference-repo
+cat /tmp/reference-repo/README.md
+rm -rf /tmp/reference-repo
+
+# Bad: Cloning into workspace pollutes project
+git clone https://github.com/example/repo.git ./reference-repo  # Don't do this
+```
+
 ## Persistence
 
 The MicroVM persists across restarts. Installed packages, files, and configurations remain until the sandbox is explicitly deleted by the user (`sbox stop --rm`).

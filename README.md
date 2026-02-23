@@ -1,10 +1,10 @@
 # sbox
 
-A Docker sandbox wrapper for [Claude Code](https://claude.ai/code) that provides seamless sharing of agents, plugins, credentials, and project configuration.
+A Docker sandbox wrapper for [Claude Code](https://claude.ai/code) that provides seamless sharing of agents, plugins, credentials, and project configuration. Supports both Docker sandbox (MicroVM) and standard container backends.
 
 ## Why sbox?
 
-Running Claude Code in Docker sandbox mode provides security isolation, but loses access to your `~/.claude` configuration. **sbox** bridges this gap by:
+Running Claude Code in Docker sandbox or container mode provides security isolation, but loses access to your `~/.claude` configuration. **sbox** bridges this gap by:
 
 - **Sharing agents** — Your `~/.claude/agents/*.md` files are converted to JSON and passed via `--agents`
 - **Sharing plugins** — Installed plugins from `~/.claude/plugins/` are mounted and loaded via `--plugin-dir`
@@ -12,6 +12,7 @@ Running Claude Code in Docker sandbox mode provides security isolation, but lose
 - **Profile system** — Install additional tools (Go, Rust, Substreams, etc.) via custom Docker images with dependency support
 - **Environment variables** — Pass host environment variables to the sandbox with global and per-project configuration
 - **Project management** — Track sandbox state, profiles, volumes, and configuration per project
+- **Multiple backends** — Choose between Docker sandbox (MicroVM) or standard containers
 
 ## Installation
 
@@ -42,7 +43,7 @@ sbox stop --rm
 
 ### `sbox run`
 
-Launch Claude in Docker sandbox with all configured mounts.
+Launch Claude in Docker sandbox or container with all configured mounts.
 
 ```bash
 sbox run                      # Run in current directory
@@ -50,6 +51,8 @@ sbox run -w /path/to/project  # Specify workspace
 sbox run --docker-socket      # Enable Docker-in-Docker
 sbox run --profile go         # Use Go profile for this session
 sbox run --recreate           # Rebuild image and recreate sandbox
+sbox run --backend container  # Use container backend instead of sandbox
+sbox run --debug              # Enable debug output for docker commands
 ```
 
 ### `sbox info`
@@ -94,6 +97,10 @@ Available profiles:
 - **go** — Go toolchain
 - **rust** — Rust toolchain (cargo, rustc, rustup)
 - **substreams** — Substreams and Firehose Core CLIs, buf, protoc (automatically includes rust)
+- **firehose** — Firehose CLI tools (substreams, firecore, fireeth, dummy-blockchain) and grpcurl
+- **javascript** — JavaScript/TypeScript development tools (pnpm, yarn)
+- **docker** — Docker CLI tools for container management
+- **bash-utils** — Common shell utilities (jq, yq, curl, wget, git, vim, nano, htop, tree)
 
 Profiles can declare dependencies on other profiles. For example, `substreams` automatically pulls in `rust`.
 
@@ -152,7 +159,8 @@ sbox clean --all     # Remove all cached data
 
 ```yaml
 claude_home: ~/.claude
-docker_socket: auto  # auto | always | never
+docker_socket: auto    # auto | always | never
+default_backend: sandbox  # sandbox | container
 envs:
   - TOKEN
   - SECRET=default_value
@@ -169,11 +177,49 @@ profiles:
 volumes:
   - ~/data:/mnt/data:ro
 docker_socket: always
+backend: sandbox  # sandbox | container
 envs:
   - API_KEY
 ```
 
 Per-project config is also stored at `~/.config/sbox/projects/<hash>/config.yaml` for settings managed via CLI commands.
+
+## Backends
+
+sbox supports two execution backends:
+
+### Sandbox Backend (default)
+
+Uses Docker's sandbox feature (MicroVM-based isolation) for enhanced security. The sandbox provides:
+- Full isolation via lightweight MicroVM
+- Native Docker support (Docker runs inside the MicroVM)
+- Automatic state persistence via `.sbox/claude-cache/` sync on stop
+
+```bash
+sbox run                  # Uses sandbox by default
+sbox run --backend sandbox
+```
+
+### Container Backend
+
+Uses standard Docker containers with named volume persistence. Useful when:
+- Docker sandbox is not available
+- You need direct host Docker socket access
+- You prefer traditional container behavior
+
+```bash
+sbox run --backend container
+```
+
+The container backend uses a named volume (`sbox-claude-<hash>`) to persist the `.claude` folder across sessions.
+
+### Backend Resolution
+
+The backend is resolved from multiple sources (later overrides earlier):
+1. Global config (`default_backend` in `~/.config/sbox/config.yaml`)
+2. `sbox.yaml` file (`backend` field)
+3. Project config (`~/.config/sbox/projects/<hash>/config.yaml`)
+4. CLI flag (`--backend`)
 
 ## How It Works
 
@@ -209,6 +255,13 @@ sbox run --recreate    # Rebuilds image and recreates sandbox (after profile cha
 ```
 
 Profiles support dependencies — adding `substreams` automatically includes `rust`. Custom profiles can be defined in `~/.config/sbox/profiles/`.
+
+### Claude State Persistence
+
+sbox preserves your Claude state across sessions:
+
+- **Sandbox backend**: The entire `.claude` folder is synced to `.sbox/claude-cache/` when running `sbox stop`. This cache is restored on the next `sbox run`, preserving credentials, settings, projects, plugins, shell snapshots, and more.
+- **Container backend**: Uses a named Docker volume (`sbox-claude-<hash>`) that persists automatically.
 
 ### Environment Variables
 

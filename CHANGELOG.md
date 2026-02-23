@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+### Added
+
+- `firehose` profile for blockchain data streaming (substreams, firecore, fireeth, dummy-blockchain, grpcurl)
+- Embedded documentation now instructs agents to:
+  - Treat `.sbox/` directory as read-only (managed by sbox)
+  - Use `/tmp/` for temporary clones and downloads to avoid cluttering the workspace
+
+### Fixed
+
+- `sbox stop --rm` now removes stopped sandboxes/containers (previously only worked on running ones)
+- Replace deprecated `--load-local-template` with `--pull-template never` for Docker Desktop 4.61+
+
 ## v1.2.0
 
 ### Added

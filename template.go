@@ -39,6 +39,8 @@ type TargetArch struct {
 	YqArch string
 	// ProtocArch is the architecture suffix for protoc downloads (x86_64, aarch_64)
 	ProtocArch string
+	// GrpcurlArch is the architecture suffix for grpcurl downloads (x86_64, arm64)
+	GrpcurlArch string
 }
 
 // GetTargetArch detects the target architecture from Docker's default platform.
@@ -56,6 +58,7 @@ func GetTargetArch() (*TargetArch, error) {
 			GoDownloadArch: "amd64",
 			YqArch:         "amd64",
 			ProtocArch:     "x86_64",
+			GrpcurlArch:    "x86_64",
 		}, nil
 	}
 
@@ -70,6 +73,7 @@ func GetTargetArch() (*TargetArch, error) {
 			GoDownloadArch: "arm64",
 			YqArch:         "arm64",
 			ProtocArch:     "aarch_64",
+			GrpcurlArch:    "arm64",
 		}, nil
 	case "x86_64", "amd64":
 		return &TargetArch{
@@ -78,6 +82,7 @@ func GetTargetArch() (*TargetArch, error) {
 			GoDownloadArch: "amd64",
 			YqArch:         "amd64",
 			ProtocArch:     "x86_64",
+			GrpcurlArch:    "x86_64",
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported Docker architecture: %s", arch)
@@ -203,7 +208,8 @@ func (tb *TemplateBuilder) GenerateDockerfile(targetArch *TargetArch) (string, e
 		sb.WriteString(fmt.Sprintf("ARG TARGETARCH=%s\n", targetArch.GOARCH))
 		sb.WriteString(fmt.Sprintf("ARG GO_ARCH=%s\n", targetArch.GoDownloadArch))
 		sb.WriteString(fmt.Sprintf("ARG YQ_ARCH=%s\n", targetArch.YqArch))
-		sb.WriteString(fmt.Sprintf("ARG PROTOC_ARCH=%s\n\n", targetArch.ProtocArch))
+		sb.WriteString(fmt.Sprintf("ARG PROTOC_ARCH=%s\n", targetArch.ProtocArch))
+		sb.WriteString(fmt.Sprintf("ARG GRPCURL_ARCH=%s\n\n", targetArch.GrpcurlArch))
 	}
 
 	sb.WriteString("# Switch to root to install sbox and packages\n")

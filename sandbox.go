@@ -80,8 +80,9 @@ func BuildSandboxCommands(opts SandboxOptions) (*SandboxCommands, error) {
 
 	// Add custom template if we have one and it's different from default
 	if templateImage != "" && templateImage != DefaultTemplateImage {
-		// --load-local-template is required for locally built images
-		createArgs = append(createArgs, "--load-local-template", "--template", templateImage)
+		// --pull-template never ensures we use the locally built image
+		// (replaced --load-local-template which was removed in Docker Desktop 4.61)
+		createArgs = append(createArgs, "--pull-template", "never", "--template", templateImage)
 	}
 
 	// Add the Claude agent and workspace path
@@ -662,8 +663,9 @@ func CreateDockerSandbox(name string, workspaceDir string, templateImage string,
 
 	// Add custom template if specified and different from default
 	if templateImage != "" && templateImage != DefaultTemplateImage {
-		// --load-local-template is required for locally built images
-		args = append(args, "--load-local-template", "--template", templateImage)
+		// --pull-template never ensures we use the locally built image
+		// (replaced --load-local-template which was removed in Docker Desktop 4.61)
+		args = append(args, "--pull-template", "never", "--template", templateImage)
 	}
 
 	// Add the agent and workspace

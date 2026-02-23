@@ -311,28 +311,49 @@ func (b *ContainerBackend) Stop(workspaceDir string, remove bool) (*ContainerInf
 		return nil, fmt.Errorf("failed to find running container: %w", err)
 	}
 
+	// If no running container but remove is requested, look for stopped container
+	if info == nil && remove {
+		info, err = b.Find(absPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find container: %w", err)
+		}
+		if info != nil {
+			zlog.Debug("found stopped container to remove",
+				zap.String("container_id", info.ID),
+				zap.String("status", info.Status))
+		}
+	}
+
 	if info == nil {
-		zlog.Debug("no running container to stop", zap.String("workspace", absPath))
+		zlog.Debug("no container to stop or remove", zap.String("workspace", absPath))
 		return nil, nil
 	}
 
-	zlog.Info("stopping container",
-		zap.String("container_id", info.ID),
-		zap.String("container_name", info.Name),
-		zap.String("workspace", absPath))
-
-	// Stop the container
-	stopCmd := exec.Command("docker", "stop", info.ID)
 	var stderr bytes.Buffer
-	stopCmd.Stderr = &stderr
 
-	if err := stopCmd.Run(); err != nil {
-		return nil, fmt.Errorf("docker stop failed: %w (stderr: %s)", err, stderr.String())
+	// Only stop if the container is running
+	if info.Status == "running" {
+		zlog.Info("stopping container",
+			zap.String("container_id", info.ID),
+			zap.String("container_name", info.Name),
+			zap.String("workspace", absPath))
+
+		// Stop the container
+		stopCmd := exec.Command("docker", "stop", info.ID)
+		stopCmd.Stderr = &stderr
+
+		if err := stopCmd.Run(); err != nil {
+			return nil, fmt.Errorf("docker stop failed: %w (stderr: %s)", err, stderr.String())
+		}
+
+		zlog.Info("container stopped",
+			zap.String("container_id", info.ID),
+			zap.String("container_name", info.Name))
+	} else {
+		zlog.Debug("container already stopped",
+			zap.String("container_id", info.ID),
+			zap.String("status", info.Status))
 	}
-
-	zlog.Info("container stopped",
-		zap.String("container_id", info.ID),
-		zap.String("container_name", info.Name))
 
 	// Remove the container if requested
 	if remove {

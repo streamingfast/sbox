@@ -181,28 +181,49 @@ func (b *SandboxBackend) Stop(workspaceDir string, remove bool) (*ContainerInfo,
 		return nil, fmt.Errorf("failed to find running sandbox: %w", err)
 	}
 
+	// If no running sandbox but remove is requested, look for stopped sandbox
+	if info == nil && remove {
+		info, err = b.Find(absPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find sandbox: %w", err)
+		}
+		if info != nil {
+			zlog.Debug("found stopped sandbox to remove",
+				zap.String("sandbox_id", info.ID),
+				zap.String("status", info.Status))
+		}
+	}
+
 	if info == nil {
-		zlog.Debug("no running sandbox to stop", zap.String("workspace", absPath))
+		zlog.Debug("no sandbox to stop or remove", zap.String("workspace", absPath))
 		return nil, nil
 	}
 
-	zlog.Info("stopping sandbox",
-		zap.String("sandbox_id", info.ID),
-		zap.String("sandbox_name", info.Name),
-		zap.String("workspace", absPath))
-
-	// Stop the sandbox using docker sandbox stop
-	stopCmd := exec.Command("docker", "sandbox", "stop", info.ID)
 	var stderr bytes.Buffer
-	stopCmd.Stderr = &stderr
 
-	if err := stopCmd.Run(); err != nil {
-		return nil, fmt.Errorf("docker sandbox stop failed: %w (stderr: %s)", err, stderr.String())
+	// Only stop if the sandbox is running
+	if info.Status == "running" {
+		zlog.Info("stopping sandbox",
+			zap.String("sandbox_id", info.ID),
+			zap.String("sandbox_name", info.Name),
+			zap.String("workspace", absPath))
+
+		// Stop the sandbox using docker sandbox stop
+		stopCmd := exec.Command("docker", "sandbox", "stop", info.ID)
+		stopCmd.Stderr = &stderr
+
+		if err := stopCmd.Run(); err != nil {
+			return nil, fmt.Errorf("docker sandbox stop failed: %w (stderr: %s)", err, stderr.String())
+		}
+
+		zlog.Info("sandbox stopped",
+			zap.String("sandbox_id", info.ID),
+			zap.String("sandbox_name", info.Name))
+	} else {
+		zlog.Debug("sandbox already stopped",
+			zap.String("sandbox_id", info.ID),
+			zap.String("status", info.Status))
 	}
-
-	zlog.Info("sandbox stopped",
-		zap.String("sandbox_id", info.ID),
-		zap.String("sandbox_name", info.Name))
 
 	// Remove the sandbox if requested using docker sandbox rm
 	if remove {
