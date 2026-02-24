@@ -136,6 +136,15 @@ RUN apt-get update && apt-get install -y curl && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 `,
 	},
+	"sql": {
+		Name:        "sql",
+		Description: "SQL development tools (PostgreSQL client)",
+		DockerfileSnippet: `# PostgreSQL client for SQL development
+RUN apt-get update && apt-get install -y \
+    postgresql-client && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+`,
+	},
 }
 
 // GetProfile retrieves a profile by name

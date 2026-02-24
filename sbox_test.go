@@ -266,7 +266,7 @@ func TestSaveAndLoadProjectConfig(t *testing.T) {
 
 func TestGetProfile(t *testing.T) {
 	// Test builtin profiles exist
-	profiles := []string{"go", "rust", "docker", "bash-utils"}
+	profiles := []string{"go", "rust", "docker", "bash-utils", "sql"}
 	for _, name := range profiles {
 		profile, ok := GetProfile(name)
 		if !ok {
