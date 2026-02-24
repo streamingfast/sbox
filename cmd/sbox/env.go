@@ -252,6 +252,7 @@ func envRemoveProject(cmd *cobra.Command, args []string) error {
 
 // printResolvedEnvs prints resolved environment variables with source tags and host resolution hints.
 // The prefix is prepended to each line for indentation.
+// Sensitive values (containing KEY, TOKEN, SECRET, etc.) are masked by default.
 func printResolvedEnvs(cmd *cobra.Command, resolved []sbox.ResolvedEnv, prefix string) {
 	hasPassthrough := false
 	hasUnset := false
@@ -259,14 +260,23 @@ func printResolvedEnvs(cmd *cobra.Command, resolved []sbox.ResolvedEnv, prefix s
 	for _, r := range resolved {
 		name := sbox.EnvName(r.Spec)
 		sourceTag := fmt.Sprintf("  [%s]", r.Source)
+		isSensitive := sbox.IsSensitiveEnvName(name)
 
 		if strings.Contains(r.Spec, "=") {
 			value := r.Spec[len(name)+1:]
-			cmd.Printf("%s%s=%s%s\n", prefix, name, value, sourceTag)
+			displayValue := value
+			if isSensitive {
+				displayValue = sbox.MaskEnvValue(value)
+			}
+			cmd.Printf("%s%s=%s%s\n", prefix, name, displayValue, sourceTag)
 		} else {
 			hostValue, found := os.LookupEnv(name)
 			if found {
-				cmd.Printf("%s%s=%s  (from host*)%s\n", prefix, name, hostValue, sourceTag)
+				displayValue := hostValue
+				if isSensitive {
+					displayValue = sbox.MaskEnvValue(hostValue)
+				}
+				cmd.Printf("%s%s=%s  (from host*)%s\n", prefix, name, displayValue, sourceTag)
 				hasPassthrough = true
 			} else {
 				cmd.Printf("%s%s  (not set on host, will be empty in sandbox)%s\n", prefix, name, sourceTag)

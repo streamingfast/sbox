@@ -965,3 +965,73 @@ sbox-claude-substreams-rs      claude   running   -
 		})
 	}
 }
+
+func TestIsSensitiveEnvName(t *testing.T) {
+	tests := []struct {
+		name     string
+		envName  string
+		expected bool
+	}{
+		{"API_KEY is sensitive", "API_KEY", true},
+		{"ANTHROPIC_API_KEY is sensitive", "ANTHROPIC_API_KEY", true},
+		{"api_key lowercase is sensitive", "api_key", true},
+		{"TOKEN is sensitive", "AUTH_TOKEN", true},
+		{"SECRET is sensitive", "MY_SECRET", true},
+		{"PASSWORD is sensitive", "DB_PASSWORD", true},
+		{"PASSWD is sensitive", "MYSQL_PASSWD", true},
+		{"CREDENTIAL is sensitive", "AWS_CREDENTIAL", true},
+		{"AUTH is sensitive", "GITHUB_AUTH", true},
+		{"PRIVATE is sensitive", "PRIVATE_KEY", true},
+		{"DEBUG is not sensitive", "DEBUG", false},
+		{"HOME is not sensitive", "HOME", false},
+		{"PATH is not sensitive", "PATH", false},
+		{"WORKSPACE_DIR is not sensitive", "WORKSPACE_DIR", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsSensitiveEnvName(tt.envName)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestMaskEnvValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		expected string
+	}{
+		{"short value fully masked", "abc", "***"},
+		{"very short value", "ab", "**"},
+		{"single char", "x", "*"},
+		{"empty string", "", ""},
+		{"medium value", "sk-ant-api03-abcdefghij", "sk-an***ij"},                    // 23 chars: front=5, end=2
+		{"long API key", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456", "sk-ant-api0***3456"}, // 44 chars: front=11, end=4
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := MaskEnvValue(tt.value)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestMaskSensitiveEnvs(t *testing.T) {
+	envs := []string{
+		"DEBUG=true",
+		"ANTHROPIC_API_KEY=sk-ant-api03-secret123",
+		"PATH=/usr/bin",
+		"AWS_SECRET_KEY=mysecretvalue",
+		"TOKEN", // passthrough, no value
+	}
+
+	masked := MaskSensitiveEnvs(envs)
+
+	assert.Equal(t, "DEBUG=true", masked[0])
+	assert.Equal(t, "ANTHROPIC_API_KEY=sk-an***23", masked[1]) // 22 chars: front=5, end=2
+	assert.Equal(t, "PATH=/usr/bin", masked[2])
+	assert.Equal(t, "AWS_SECRET_KEY=mys***e", masked[3]) // 13 chars: front=3, end=1
+	assert.Equal(t, "TOKEN", masked[4])                  // passthrough unchanged
+}

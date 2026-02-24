@@ -564,7 +564,7 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 	zlog.Debug("merged project config with sbox.yaml file",
 		zap.Strings("profiles", merged.Profiles),
 		zap.Strings("volumes", merged.Volumes),
-		zap.Strings("envs", merged.Envs),
+		zap.Strings("envs", MaskSensitiveEnvs(merged.Envs)),
 		zap.String("docker_socket", merged.DockerSocket),
 		zap.String("backend", merged.Backend))
 
@@ -657,6 +657,68 @@ func EnvName(spec string) string {
 		return spec[:i]
 	}
 	return spec
+}
+
+// sensitiveEnvKeywords contains keywords that indicate a sensitive environment variable
+var sensitiveEnvKeywords = []string{
+	"KEY",
+	"TOKEN",
+	"SECRET",
+	"PASSWORD",
+	"PASSWD",
+	"CREDENTIAL",
+	"AUTH",
+	"PRIVATE",
+}
+
+// IsSensitiveEnvName returns true if the env name contains sensitive keywords
+func IsSensitiveEnvName(name string) bool {
+	upperName := strings.ToUpper(name)
+	for _, keyword := range sensitiveEnvKeywords {
+		if strings.Contains(upperName, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+// MaskEnvValue masks a sensitive value, showing ~25% from start and ~10% from end
+func MaskEnvValue(value string) string {
+	n := len(value)
+	if n <= 3 {
+		return strings.Repeat("*", n)
+	}
+
+	frontLen := n / 4
+	if frontLen < 1 {
+		frontLen = 1
+	}
+	endLen := n / 10
+	if endLen < 1 {
+		endLen = 1
+	}
+
+	if frontLen+endLen >= n {
+		return strings.Repeat("*", n)
+	}
+
+	return value[:frontLen] + "***" + value[n-endLen:]
+}
+
+// MaskSensitiveEnvs returns a copy of envs with sensitive values masked.
+// Used for safe logging of env vars.
+func MaskSensitiveEnvs(envs []string) []string {
+	result := make([]string, len(envs))
+	for i, spec := range envs {
+		name := EnvName(spec)
+		if IsSensitiveEnvName(name) && strings.Contains(spec, "=") {
+			value := spec[len(name)+1:]
+			result[i] = name + "=" + MaskEnvValue(value)
+		} else {
+			result[i] = spec
+		}
+	}
+	return result
 }
 
 // ResolvedEnv represents an environment variable with its source
