@@ -4,11 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## Unreleased
+## v1.3.1
 
 ### Added
 
 - `sql` profile for SQL development (PostgreSQL client)
+
+### Fixed
+
+- Fix custom template images not found by removing `--pull-template never` flag (default `missing` policy correctly finds images in local Docker daemon)
 
 ## v1.3.0
 
