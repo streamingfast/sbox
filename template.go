@@ -115,6 +115,7 @@ func (tb *TemplateBuilder) TemplateHash() string {
 // sboxVersion returns the sbox version to use for the template.
 // In dev mode (SBOX_DEV=1), returns "dev" to indicate local build.
 // If the version is "dev" (no ldflags override), falls back to "latest".
+// For semantic versions (e.g., "1.3.1"), ensures "v" prefix is added (e.g., "v1.3.1").
 func (tb *TemplateBuilder) sboxVersion() string {
 	if os.Getenv("SBOX_DEV") == "1" {
 		return "dev"
@@ -122,7 +123,14 @@ func (tb *TemplateBuilder) sboxVersion() string {
 	if Version == "dev" {
 		return "latest"
 	}
-	return Version
+
+	// Ensure semantic versions have "v" prefix (images are tagged with "v1.3.1" not "1.3.1")
+	version := Version
+	if len(version) > 0 && version[0] >= '0' && version[0] <= '9' {
+		version = "v" + version
+	}
+
+	return version
 }
 
 // isDevMode returns true if SBOX_DEV=1 is set

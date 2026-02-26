@@ -266,7 +266,7 @@ func TestSaveAndLoadProjectConfig(t *testing.T) {
 
 func TestGetProfile(t *testing.T) {
 	// Test builtin profiles exist
-	profiles := []string{"go", "rust", "docker", "bash-utils", "sql"}
+	profiles := []string{"go", "rust", "docker", "bash-utils", "sql", "cpp"}
 	for _, name := range profiles {
 		profile, ok := GetProfile(name)
 		if !ok {
@@ -898,6 +898,25 @@ func TestSubstreamsProfile(t *testing.T) {
 	assert.Contains(t, profile.DockerfileSnippet, "protoc")
 }
 
+func TestCppProfile(t *testing.T) {
+	profile, ok := GetProfile("cpp")
+	require.True(t, ok, "cpp profile should exist")
+
+	assert.Equal(t, "cpp", profile.Name)
+	assert.Contains(t, profile.Description, "C/C++")
+	assert.Empty(t, profile.Dependencies)
+	assert.Contains(t, profile.DockerfileSnippet, "build-essential")
+	assert.Contains(t, profile.DockerfileSnippet, "libboost-all-dev")
+	assert.Contains(t, profile.DockerfileSnippet, "libc++-dev")
+	assert.Contains(t, profile.DockerfileSnippet, "libstdc++")
+	assert.Contains(t, profile.DockerfileSnippet, "autoconf")
+	assert.Contains(t, profile.DockerfileSnippet, "automake")
+	assert.Contains(t, profile.DockerfileSnippet, "libtool")
+	assert.Contains(t, profile.DockerfileSnippet, "ninja-build")
+	assert.Contains(t, profile.DockerfileSnippet, "libzstd-dev")
+	assert.Contains(t, profile.DockerfileSnippet, "zlib1g-dev")
+}
+
 func TestParseSandboxLsOutput(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1034,4 +1053,70 @@ func TestMaskSensitiveEnvs(t *testing.T) {
 	assert.Equal(t, "PATH=/usr/bin", masked[2])
 	assert.Equal(t, "AWS_SECRET_KEY=mys***e", masked[3]) // 13 chars: front=3, end=1
 	assert.Equal(t, "TOKEN", masked[4])                  // passthrough unchanged
+}
+
+func TestSboxVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		version     string
+		sboxDevEnv  string
+		expected    string
+	}{
+		{
+			name:     "dev mode with SBOX_DEV=1",
+			version:  "1.3.1",
+			sboxDevEnv: "1",
+			expected: "dev",
+		},
+		{
+			name:     "version is dev (no ldflags)",
+			version:  "dev",
+			expected: "latest",
+		},
+		{
+			name:     "semantic version without v prefix",
+			version:  "1.3.1",
+			expected: "v1.3.1",
+		},
+		{
+			name:     "semantic version with v prefix",
+			version:  "v1.3.1",
+			expected: "v1.3.1",
+		},
+		{
+			name:     "semantic version with patch",
+			version:  "2.10.5",
+			expected: "v2.10.5",
+		},
+		{
+			name:     "non-semantic version (edge)",
+			version:  "edge-abc1234",
+			expected: "edge-abc1234",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Save original env and version
+			origEnv := os.Getenv("SBOX_DEV")
+			origVersion := Version
+			defer func() {
+				os.Setenv("SBOX_DEV", origEnv)
+				Version = origVersion
+			}()
+
+			// Set test environment
+			if tt.sboxDevEnv != "" {
+				os.Setenv("SBOX_DEV", tt.sboxDevEnv)
+			} else {
+				os.Unsetenv("SBOX_DEV")
+			}
+			Version = tt.version
+
+			// Test
+			tb := &TemplateBuilder{}
+			result := tb.sboxVersion()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

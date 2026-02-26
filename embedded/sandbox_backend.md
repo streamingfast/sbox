@@ -72,6 +72,26 @@ The MicroVM persists across restarts. Installed packages, files, and configurati
 | Installed apt packages | Yes (until VM deleted) |
 | Files outside workspace | Yes (until VM deleted) |
 
+## Networking
+
+Sandbox env has instructions about Firewall but their instruction does not tell how to do it. When you need network access to some host, dev will need to allow the sandbox network using `docker sandbox network proxy` command here its help:
+
+```
+Usage:  docker sandbox network proxy <sandbox> [OPTIONS]
+Manage proxy configuration for a sandbox
+Options:
+--allow-cidr string    Remove an IP range in CIDR notation from the block or bypass lists (can be specified multiple times)
+--allow-host string    Permit access to a domain or IP (can be specified multiple times)
+--block-cidr string    Block access to an IP range in CIDR notation (can be specified multiple times)
+--block-host string    Block access to a domain or IP (can be specified multiple times)
+--bypass-cidr string   Bypass MITM proxy for an IP range in CIDR notation (can be specified multiple times)
+--bypass-host string   Bypass MITM proxy for a domain or IP (can be specified multipletimes)
+-D, --debug                Enable debug logging
+--policy allow|deny    Set the default policy
+```
+
+Propose to the user the command(s) he should perform before you can retry.
+
 ## Docker Usage
 
 Docker Sandbox includes a **native Docker daemon** running inside the MicroVM. This provides full Docker functionality without any special configuration.

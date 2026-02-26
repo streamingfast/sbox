@@ -84,6 +84,32 @@ func TestIntegration_BashUtilsProfile(t *testing.T) {
 	})
 }
 
+func TestIntegration_CppProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	testProfileBuild(t, "cpp", []string{
+		"g++ --version",
+		"make --version",
+		"autoconf --version",
+		"automake --version",
+		"libtool --version",
+		"ninja --version",
+		"pkg-config --exists zlib && echo zlib-ok",
+		"pkg-config --exists libzstd && echo zstd-ok",
+	}, []string{
+		"g++",
+		"GNU Make",
+		"autoconf",
+		"automake",
+		"libtool",
+		"", // ninja just outputs version number
+		"zlib-ok",
+		"zstd-ok",
+	})
+}
+
 // testProfileBuild builds a Docker image with the given profile and runs verification commands
 // Commands are run as a non-root user to simulate the sandbox environment where user 'agent' runs
 func testProfileBuild(t *testing.T, profileName string, commands []string, expectedOutputs []string) {

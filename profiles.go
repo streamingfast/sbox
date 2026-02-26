@@ -145,6 +145,24 @@ RUN apt-get update && apt-get install -y \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 `,
 	},
+	"cpp": {
+		Name:        "cpp",
+		Description: "C/C++ development tools (Boost, libc++, build tools, compression libs)",
+		DockerfileSnippet: `# C/C++ development tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libboost-all-dev \
+    libc++-dev \
+    libstdc++-14-dev \
+    autoconf \
+    automake \
+    libtool \
+    ninja-build \
+    libzstd-dev \
+    zlib1g-dev && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+`,
+	},
 }
 
 // GetProfile retrieves a profile by name

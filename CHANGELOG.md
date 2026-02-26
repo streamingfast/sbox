@@ -4,11 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## Unreleased
+## v1.3.2
+
+### Added
+
+- `cpp` profile for C/C++ development (Boost, libc++, libstdc++, autoconf, automake, libtool, ninja-build, libzstd-dev, zlib1g-dev)
 
 ### Changed
 
 - Sensitive environment variables (KEY, TOKEN, SECRET, PASSWORD, etc.) are now masked in `sbox info` and `sbox env list` output
+
+### Fixed
+
+- Fix Docker image tag format to include `v` prefix for semantic versions (e.g., `v1.3.1` instead of `1.3.1`) to match published image tags
 
 ## v1.3.1
 
