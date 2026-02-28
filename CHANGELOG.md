@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- **BREAKING**: Replace `SBOX_DEV=1` with `SBOX_ENTRYPOINT_IMAGE` environment variable for more flexible entrypoint image configuration
+  - `SBOX_ENTRYPOINT_IMAGE=local` - builds sbox binary locally (equivalent to old `SBOX_DEV=1`)
+  - `SBOX_ENTRYPOINT_IMAGE=dev` - uses `ghcr.io/streamingfast/sbox:dev` image (tag only)
+  - `SBOX_ENTRYPOINT_IMAGE=ghcr.io/custom/sbox:tag` - uses custom registry/image (full image)
+  - If not set, uses version-based image (e.g., `ghcr.io/streamingfast/sbox:v1.3.2`)
 - Sensitive environment variables (KEY, TOKEN, SECRET, PASSWORD, etc.) are now masked in `sbox info` and `sbox env list` output
 
 ### Fixed

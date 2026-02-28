@@ -1057,17 +1057,10 @@ func TestMaskSensitiveEnvs(t *testing.T) {
 
 func TestSboxVersion(t *testing.T) {
 	tests := []struct {
-		name        string
-		version     string
-		sboxDevEnv  string
-		expected    string
+		name     string
+		version  string
+		expected string
 	}{
-		{
-			name:     "dev mode with SBOX_DEV=1",
-			version:  "1.3.1",
-			sboxDevEnv: "1",
-			expected: "dev",
-		},
 		{
 			name:     "version is dev (no ldflags)",
 			version:  "dev",
@@ -1097,25 +1090,153 @@ func TestSboxVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Save original env and version
-			origEnv := os.Getenv("SBOX_DEV")
+			// Save original version
 			origVersion := Version
 			defer func() {
-				os.Setenv("SBOX_DEV", origEnv)
 				Version = origVersion
 			}()
 
-			// Set test environment
-			if tt.sboxDevEnv != "" {
-				os.Setenv("SBOX_DEV", tt.sboxDevEnv)
-			} else {
-				os.Unsetenv("SBOX_DEV")
-			}
 			Version = tt.version
 
 			// Test
 			tb := &TemplateBuilder{}
 			result := tb.sboxVersion()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestEntrypointImage(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		version  string
+		expected string
+	}{
+		{
+			name:     "local build mode",
+			envValue: "local",
+			version:  "1.3.1",
+			expected: "",
+		},
+		{
+			name:     "tag only (dev)",
+			envValue: "dev",
+			version:  "1.3.1",
+			expected: "ghcr.io/streamingfast/sbox:dev",
+		},
+		{
+			name:     "tag only (v1.2.0)",
+			envValue: "v1.2.0",
+			version:  "1.3.1",
+			expected: "ghcr.io/streamingfast/sbox:v1.2.0",
+		},
+		{
+			name:     "full image with custom registry",
+			envValue: "myregistry.io/myorg/sbox:custom",
+			version:  "1.3.1",
+			expected: "myregistry.io/myorg/sbox:custom",
+		},
+		{
+			name:     "full image with ghcr",
+			envValue: "ghcr.io/streamingfast/sbox:edge-abc123",
+			version:  "1.3.1",
+			expected: "ghcr.io/streamingfast/sbox:edge-abc123",
+		},
+		{
+			name:     "no env - use version",
+			envValue: "",
+			version:  "1.3.1",
+			expected: "ghcr.io/streamingfast/sbox:v1.3.1",
+		},
+		{
+			name:     "no env - version is dev",
+			envValue: "",
+			version:  "dev",
+			expected: "ghcr.io/streamingfast/sbox:latest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Save original env and version
+			origEnv := os.Getenv("SBOX_ENTRYPOINT_IMAGE")
+			origVersion := Version
+			defer func() {
+				if origEnv != "" {
+					os.Setenv("SBOX_ENTRYPOINT_IMAGE", origEnv)
+				} else {
+					os.Unsetenv("SBOX_ENTRYPOINT_IMAGE")
+				}
+				Version = origVersion
+			}()
+
+			// Set test environment
+			if tt.envValue != "" {
+				os.Setenv("SBOX_ENTRYPOINT_IMAGE", tt.envValue)
+			} else {
+				os.Unsetenv("SBOX_ENTRYPOINT_IMAGE")
+			}
+			Version = tt.version
+
+			// Test
+			tb := &TemplateBuilder{}
+			result := tb.entrypointImage()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestIsLocalBuildMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		expected bool
+	}{
+		{
+			name:     "local build mode",
+			envValue: "local",
+			expected: true,
+		},
+		{
+			name:     "tag mode",
+			envValue: "dev",
+			expected: false,
+		},
+		{
+			name:     "full image mode",
+			envValue: "ghcr.io/streamingfast/sbox:v1.2.0",
+			expected: false,
+		},
+		{
+			name:     "no env set",
+			envValue: "",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Save original env
+			origEnv := os.Getenv("SBOX_ENTRYPOINT_IMAGE")
+			defer func() {
+				if origEnv != "" {
+					os.Setenv("SBOX_ENTRYPOINT_IMAGE", origEnv)
+				} else {
+					os.Unsetenv("SBOX_ENTRYPOINT_IMAGE")
+				}
+			}()
+
+			// Set test environment
+			if tt.envValue != "" {
+				os.Setenv("SBOX_ENTRYPOINT_IMAGE", tt.envValue)
+			} else {
+				os.Unsetenv("SBOX_ENTRYPOINT_IMAGE")
+			}
+
+			// Test
+			tb := &TemplateBuilder{}
+			result := tb.isLocalBuildMode()
 			assert.Equal(t, tt.expected, result)
 		})
 	}

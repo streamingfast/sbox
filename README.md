@@ -267,6 +267,36 @@ sbox preserves your Claude state across sessions:
 
 Environment variables configured via `sbox env` are resolved at sandbox launch time. Name-only entries (e.g. `FOO`) are resolved from the current host environment. If a host variable is not set, it is skipped.
 
+### Advanced: Custom Entrypoint Image
+
+By default, sbox uses the published `ghcr.io/streamingfast/sbox` image matching the installed version. You can override this with the `SBOX_ENTRYPOINT_IMAGE` environment variable for development or testing:
+
+```bash
+# Build sbox binary locally from source (for development)
+SBOX_ENTRYPOINT_IMAGE=local sbox run
+
+# Use a specific tag from the official registry
+SBOX_ENTRYPOINT_IMAGE=dev sbox run
+SBOX_ENTRYPOINT_IMAGE=v1.3.0 sbox run
+
+# Use a custom registry or image
+SBOX_ENTRYPOINT_IMAGE=myregistry.io/custom/sbox:test sbox run
+
+# Default behavior (no env var set) - uses version-based tag
+sbox run  # Uses ghcr.io/streamingfast/sbox:v1.3.2
+```
+
+**How it works:**
+- `SBOX_ENTRYPOINT_IMAGE=local` — Cross-compiles the sbox binary from your local source tree and includes it in the custom template image. Requires running from the sbox repository directory.
+- `SBOX_ENTRYPOINT_IMAGE=<tag>` — Uses `ghcr.io/streamingfast/sbox:<tag>` (e.g., `dev`, `v1.2.0`, `latest`)
+- `SBOX_ENTRYPOINT_IMAGE=<full-image>` — Uses the exact image specified (e.g., `myregistry.io/org/sbox:custom`)
+- Not set — Uses `ghcr.io/streamingfast/sbox:v<version>` where version matches the installed sbox CLI
+
+This is useful for:
+- Testing unreleased sbox features during development
+- Using development builds from a custom registry
+- Pinning to a specific sbox version different from your CLI
+
 ## License
 
 MIT
