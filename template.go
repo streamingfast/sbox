@@ -350,6 +350,22 @@ func (tb *TemplateBuilder) Build(forceRebuild bool) (string, error) {
 		zap.String("platform", targetArch.DockerPlatform),
 		zap.Bool("local_build_mode", tb.isLocalBuildMode()))
 
+	// When force rebuilding, pull the latest base image to get newest Claude version
+	if forceRebuild {
+		fmt.Printf("Pulling latest base image to get newest Claude version...\n")
+		pullCmd := exec.Command("docker", "pull", DefaultTemplateImage)
+		pullCmd.Stdout = os.Stdout
+		pullCmd.Stderr = os.Stderr
+		if err := pullCmd.Run(); err != nil {
+			zlog.Warn("failed to pull base image, continuing with cached version",
+				zap.String("image", DefaultTemplateImage),
+				zap.Error(err))
+			// Non-fatal: continue with cached base image
+		} else {
+			fmt.Printf("Base image updated successfully\n")
+		}
+	}
+
 	// Create temporary directory for Dockerfile and binary
 	tempDir, err := os.MkdirTemp("", "sbox-template-")
 	if err != nil {

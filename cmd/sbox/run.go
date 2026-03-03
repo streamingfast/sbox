@@ -29,7 +29,7 @@ var RunCommand = Command(runE,
 	Flags(func(flags *pflag.FlagSet) {
 		flags.Bool("docker-socket", false, "Mount Docker socket into sandbox/container")
 		flags.StringSlice("profile", nil, "Additional profiles to use for this session")
-		flags.Bool("recreate", false, "Force rebuild of custom template image and recreate sandbox/container")
+		flags.Bool("recreate", false, "Force rebuild of custom template image and recreate sandbox/container (pulls latest base image)")
 		flags.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 		flags.Bool("debug", false, "Enable debug mode for docker commands")
 		flags.String("backend", "", "Backend type: 'sandbox' (default) or 'container'")
@@ -130,46 +130,28 @@ func runE(cmd *cobra.Command, args []string) error {
 		zlog.Debug("generated sandbox name", zap.String("name", sandboxName))
 	}
 
-	// Check for existing sandbox by name first, then by workspace path
-	existingSandbox, err := sbox.FindDockerSandboxByName(projectConfig.SandboxName)
-	if err != nil {
-		zlog.Debug("failed to check for existing sandbox by name", zap.Error(err))
-	}
-	if existingSandbox == nil {
-		// Fallback: check by workspace path for backwards compatibility
-		existingSandbox, err = sbox.FindDockerSandbox(workspaceDir)
-		if err != nil {
-			zlog.Debug("failed to check for existing sandbox by workspace", zap.Error(err))
-		}
-	}
-
 	if recreate {
-		// Remove existing sandbox so a fresh one is created
-		if existingSandbox != nil {
+		// Remove existing container/sandbox so a fresh one is created
+		// Use backend's Find() method to check for existing instance
+		existing, err := backend.Find(workspaceDir)
+		if err != nil {
+			zlog.Debug("failed to check for existing container/sandbox", zap.Error(err))
+		}
+
+		if existing != nil {
 			// Save .claude cache before removing (for persistence across recreate)
-			if existingSandbox.Status == "running" {
+			if existing.Status == "running" {
 				if err := backend.SaveCache(workspaceDir); err != nil {
 					zlog.Warn("failed to save cache", zap.Error(err))
 					// Non-fatal - continue with recreate
 				}
 			}
 
-			cmd.Printf("Removing existing sandbox '%s' (%s)...\n", existingSandbox.Name, existingSandbox.ID)
-			if err := sbox.RemoveDockerSandbox(existingSandbox.ID); err != nil {
-				return fmt.Errorf("failed to remove existing sandbox: %w", err)
+			cmd.Printf("Removing existing %s '%s' (%s)...\n", backendType, existing.Name, existing.ID)
+			if err := backend.Remove(existing.ID); err != nil {
+				return fmt.Errorf("failed to remove existing %s: %w", backendType, err)
 			}
-			cmd.Println("Existing sandbox removed")
-			existingSandbox = nil // Clear so we don't check mounts on removed sandbox
-		} else {
-			// Sandbox lookup might have failed, but sandbox might still exist
-			// Try to remove by name directly
-			cmd.Printf("Removing sandbox '%s' (if exists)...\n", projectConfig.SandboxName)
-			if err := sbox.RemoveDockerSandboxByName(projectConfig.SandboxName); err != nil {
-				// Non-fatal: sandbox might not exist
-				zlog.Debug("failed to remove sandbox by name (may not exist)", zap.Error(err))
-			} else {
-				cmd.Println("Existing sandbox removed")
-			}
+			cmd.Printf("Existing %s removed\n", backendType)
 		}
 	}
 

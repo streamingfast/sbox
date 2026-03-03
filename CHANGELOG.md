@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## v1.3.3
+
+### Changed
+
+- `sbox run --recreate` now automatically pulls the latest base image to ensure you get the newest Claude Code version
+
+### Fixed
+
+- `sbox run --recreate` now properly removes existing containers in container backend (previously only worked for sandbox backend)
+
 ## v1.3.2
 
 ### Added
