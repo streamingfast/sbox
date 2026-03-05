@@ -234,7 +234,14 @@ func printContainerStatus(cmd *cobra.Command, workspaceDir string, containerName
 	// Always derive a name to display
 	name := containerName
 	if name == "" && workspaceDir != "" {
-		derived, err := sbox.GenerateSandboxName(workspaceDir)
+		// Load project config to get agent type
+		projectConfig, _, err := sbox.GetProjectConfig(workspaceDir)
+		agentType := sbox.DefaultAgent
+		if err == nil && projectConfig.Agent != "" {
+			agentType = sbox.AgentType(projectConfig.Agent)
+		}
+
+		derived, err := sbox.GenerateSandboxName(workspaceDir, agentType)
 		if err == nil {
 			name = derived
 		}

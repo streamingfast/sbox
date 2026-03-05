@@ -873,7 +873,7 @@ func TestResolveProfiles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := &Config{}
-			builder := NewTemplateBuilder(config, tt.profiles)
+			builder := NewTemplateBuilder(config, tt.profiles, DefaultAgent)
 			got := builder.ResolveProfiles()
 
 			if tt.want == nil {

@@ -33,16 +33,20 @@ func (b *ContainerBackend) Name() BackendType {
 	return BackendContainer
 }
 
-// volumeName generates a unique volume name for persisting .claude folder
-func (b *ContainerBackend) volumeName(workspaceDir string) string {
+// volumeName generates a unique volume name for persisting agent config folder
+func (b *ContainerBackend) volumeName(workspaceDir string, agent AgentType) string {
 	absPath, _ := filepath.Abs(workspaceDir)
 	hash := sha256.Sum256([]byte(absPath))
-	return "sbox-claude-" + hex.EncodeToString(hash[:])[:12]
+	agentName := string(agent)
+	if agentName == "" {
+		agentName = string(DefaultAgent)
+	}
+	return "sbox-" + agentName + "-" + hex.EncodeToString(hash[:])[:12]
 }
 
 // containerName generates the container name for a workspace
-func (b *ContainerBackend) containerName(workspaceDir string) (string, error) {
-	return GenerateSandboxName(workspaceDir)
+func (b *ContainerBackend) containerName(workspaceDir string, agent AgentType) (string, error) {
+	return GenerateSandboxName(workspaceDir, agent)
 }
 
 // Run starts or attaches to a container for the given workspace
@@ -52,7 +56,13 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	containerName, err := b.containerName(absPath)
+	// Resolve agent type first (needed for container name)
+	agentType := AgentType(opts.ProjectConfig.Agent)
+	if agentType == "" {
+		agentType = DefaultAgent
+	}
+
+	containerName, err := b.containerName(absPath, agentType)
 	if err != nil {
 		return fmt.Errorf("failed to generate container name: %w", err)
 	}
@@ -70,7 +80,7 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 	if opts.SboxFile != nil && opts.SboxFile.Config != nil {
 		sboxFileEnvs = opts.SboxFile.Config.Envs
 	}
-	if err := PrepareSboxDirectory(absPath, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendContainer); err != nil {
+	if err := PrepareSboxDirectory(absPath, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendContainer, agentType); err != nil {
 		return fmt.Errorf("failed to prepare .sbox directory: %w", err)
 	}
 
@@ -93,7 +103,7 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 
 	// Container doesn't exist - create and run it
 	// Build custom template
-	builder := NewTemplateBuilder(opts.Config, allProfiles)
+	builder := NewTemplateBuilder(opts.Config, allProfiles, agentType)
 	templateImage, err := builder.Build(opts.ForceRebuild)
 	if err != nil {
 		return fmt.Errorf("failed to build custom template: %w", err)
@@ -105,14 +115,14 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 		zap.String("workspace", absPath),
 		zap.String("template", templateImage))
 
-	// Ensure volume exists for .claude persistence
-	volumeName := b.volumeName(absPath)
+	// Ensure volume exists for agent config persistence
+	volumeName := b.volumeName(absPath, agentType)
 	if err := b.ensureVolume(volumeName); err != nil {
 		return fmt.Errorf("failed to create persistence volume: %w", err)
 	}
 
 	// Build docker run command
-	args := b.buildRunArgs(containerName, absPath, templateImage, volumeName, opts)
+	args := b.buildRunArgs(containerName, absPath, templateImage, volumeName, agentType, opts)
 
 	zlog.Debug("executing docker command",
 		zap.String("cmd", "docker"),
@@ -134,14 +144,16 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 }
 
 // buildRunArgs constructs the docker run command arguments
-func (b *ContainerBackend) buildRunArgs(containerName, workspaceDir, image, volumeName string, opts BackendOptions) []string {
+func (b *ContainerBackend) buildRunArgs(containerName, workspaceDir, image, volumeName string, agentType AgentType, opts BackendOptions) []string {
 	args := []string{"run", "-it", "--name", containerName}
 
 	// Mount workspace directory
 	args = append(args, "-v", fmt.Sprintf("%s:%s", workspaceDir, workspaceDir))
 
-	// Mount persistence volume for .claude folder
-	args = append(args, "-v", fmt.Sprintf("%s:/home/agent/.claude", volumeName))
+	// Mount persistence volume for agent config folder
+	spec := GetAgentSpec(agentType)
+	configDir := spec.ConfigDirName()
+	args = append(args, "-v", fmt.Sprintf("%s:/home/agent/%s", volumeName, configDir))
 
 	// Set working directory
 	args = append(args, "-w", workspaceDir)
@@ -193,16 +205,19 @@ func (b *ContainerBackend) buildRunArgs(containerName, workspaceDir, image, volu
 		args = append(args, "-v", mountSpec)
 	}
 
-	// Mount settings files if they exist
+	// Mount settings files if they exist (agent-specific)
 	if b.config != nil {
-		settingsPath := filepath.Join(b.config.ClaudeHome, "settings.json")
+		agentHome := b.config.GetAgentHome(agentType)
+
+		settingsPath := filepath.Join(agentHome, "settings.json")
 		if _, err := os.Stat(settingsPath); err == nil {
-			args = append(args, "-v", fmt.Sprintf("%s:/home/agent/.claude/settings.json:ro", settingsPath))
+			// Mount to agent-specific location in container
+			args = append(args, "-v", fmt.Sprintf("%s:/home/agent/%s/settings.json:ro", settingsPath, configDir))
 		}
 
-		settingsLocalPath := filepath.Join(b.config.ClaudeHome, "settings.local.json")
+		settingsLocalPath := filepath.Join(agentHome, "settings.local.json")
 		if _, err := os.Stat(settingsLocalPath); err == nil {
-			args = append(args, "-v", fmt.Sprintf("%s:/home/agent/.claude/settings.local.json:ro", settingsLocalPath))
+			args = append(args, "-v", fmt.Sprintf("%s:/home/agent/%s/settings.local.json:ro", settingsLocalPath, configDir))
 		}
 	}
 
@@ -383,7 +398,18 @@ func (b *ContainerBackend) Find(workspaceDir string) (*ContainerInfo, error) {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	containerName, err := b.containerName(absPath)
+	// Load project config to get the agent type
+	projectConfig, _, err := GetProjectConfig(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load project config: %w", err)
+	}
+
+	agentType := AgentType(projectConfig.Agent)
+	if agentType == "" {
+		agentType = DefaultAgent
+	}
+
+	containerName, err := b.containerName(absPath, agentType)
 	if err != nil {
 		return nil, err
 	}
@@ -453,8 +479,8 @@ func (b *ContainerBackend) FindRunning(workspaceDir string) (*ContainerInfo, err
 
 // List returns all containers managed by this backend
 func (b *ContainerBackend) List() ([]ContainerInfo, error) {
-	// List all containers with the sbox-claude- prefix
-	cmd := exec.Command("docker", "ps", "-a", "--filter", "name=^sbox-claude-", "--format", "{{json .}}")
+	// List all containers with the sbox- prefix (covers both claude and opencode)
+	cmd := exec.Command("docker", "ps", "-a", "--filter", "name=^sbox-", "--format", "{{json .}}")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -548,8 +574,8 @@ func (b *ContainerBackend) Remove(containerID string) error {
 }
 
 // RemoveVolume removes the persistence volume for a workspace
-func (b *ContainerBackend) RemoveVolume(workspaceDir string) error {
-	volumeName := b.volumeName(workspaceDir)
+func (b *ContainerBackend) RemoveVolume(workspaceDir string, agentType AgentType) error {
+	volumeName := b.volumeName(workspaceDir, agentType)
 
 	zlog.Info("removing persistence volume", zap.String("volume", volumeName))
 
@@ -571,6 +597,19 @@ func (b *ContainerBackend) Cleanup(workspaceDir string) error {
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
+	// Load project config to determine agent type
+	projectConfig, _, err := GetProjectConfig(absPath)
+	if err != nil {
+		zlog.Warn("failed to load project config for cleanup", zap.Error(err))
+		// Continue with default agent
+		projectConfig = &ProjectConfig{}
+	}
+
+	agentType := AgentType(projectConfig.Agent)
+	if agentType == "" {
+		agentType = DefaultAgent
+	}
+
 	// Remove .sbox directory
 	sboxDir := filepath.Join(absPath, ".sbox")
 	if err := os.RemoveAll(sboxDir); err != nil {
@@ -581,7 +620,7 @@ func (b *ContainerBackend) Cleanup(workspaceDir string) error {
 	}
 
 	// Remove persistence volume
-	if err := b.RemoveVolume(workspaceDir); err != nil {
+	if err := b.RemoveVolume(workspaceDir, agentType); err != nil {
 		zlog.Warn("failed to remove persistence volume", zap.Error(err))
 		// Non-fatal - volume might not exist
 	}

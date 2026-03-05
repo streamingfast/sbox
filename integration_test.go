@@ -272,7 +272,7 @@ func TestIntegration_SubstreamsProfile(t *testing.T) {
 	// Substreams profile has rust as a dependency, so we need to test the full
 	// resolved profile chain using the TemplateBuilder
 	config := &Config{}
-	builder := NewTemplateBuilder(config, []string{"substreams"})
+	builder := NewTemplateBuilder(config, []string{"substreams"}, DefaultAgent)
 
 	// Verify dependencies are resolved correctly
 	resolved := builder.ResolveProfiles()

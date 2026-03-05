@@ -1,6 +1,6 @@
 # sbox
 
-A Docker sandbox wrapper for [Claude Code](https://claude.ai/code) that provides seamless sharing of agents, plugins, credentials, and project configuration. Supports both Docker sandbox (MicroVM) and standard container backends.
+A Docker sandbox wrapper for AI Code agents (Claude Code, OpenCode) that provides seamless sharing of agents, plugins, credentials, and project configuration. Supports both Docker sandbox (MicroVM) and standard container backends.
 
 ## Why sbox?
 
@@ -13,6 +13,7 @@ Running Claude Code in Docker sandbox or container mode provides security isolat
 - **Environment variables** — Pass host environment variables to the sandbox with global and per-project configuration
 - **Project management** — Track sandbox state, profiles, volumes, and configuration per project
 - **Multiple backends** — Choose between Docker sandbox (MicroVM) or standard containers
+- **Multiple agents** — Choose between Claude Code or OpenCode as your AI agent
 
 ## Installation
 
@@ -52,6 +53,7 @@ sbox run --docker-socket      # Enable Docker-in-Docker
 sbox run --profile go         # Use Go profile for this session
 sbox run --recreate           # Rebuild image and recreate sandbox
 sbox run --backend container  # Use container backend instead of sandbox
+sbox run --agent opencode     # Use OpenCode instead of Claude
 sbox run --debug              # Enable debug output for docker commands
 ```
 
@@ -103,6 +105,22 @@ Available profiles:
 - **bash-utils** — Common shell utilities (jq, yq, curl, wget, git, vim, nano, htop, tree)
 
 Profiles can declare dependencies on other profiles. For example, `substreams` automatically pulls in `rust`.
+
+### `sbox agent`
+
+Manage which AI agent (Claude Code or OpenCode) to use.
+
+```bash
+sbox agent list              # Show available agents
+sbox agent set opencode      # Set OpenCode as default globally
+sbox agent show              # Show current default agent
+```
+
+The agent can be configured at multiple levels (later overrides earlier):
+1. Global config (`default_agent` in `~/.config/sbox/config.yaml`)
+2. `sbox.yaml` file (`agent` field)
+3. Project config (persisted from `--agent` flag)
+4. CLI flag (`--agent`)
 
 ### `sbox env`
 
@@ -161,6 +179,7 @@ sbox clean --all     # Remove all cached data
 claude_home: ~/.claude
 docker_socket: auto    # auto | always | never
 default_backend: sandbox  # sandbox | container
+default_agent: claude  # claude | opencode
 envs:
   - TOKEN
   - SECRET=default_value
@@ -178,6 +197,7 @@ volumes:
   - ~/data:/mnt/data:ro
 docker_socket: always
 backend: sandbox  # sandbox | container
+agent: claude  # claude | opencode
 envs:
   - API_KEY
 ```
@@ -220,6 +240,35 @@ The backend is resolved from multiple sources (later overrides earlier):
 2. `sbox.yaml` file (`backend` field)
 3. Project config (`~/.config/sbox/projects/<hash>/config.yaml`)
 4. CLI flag (`--backend`)
+
+## Agents
+
+sbox supports multiple AI agents:
+
+### Claude Code (default)
+
+Uses [Claude Code](https://claude.ai/code) as the AI agent. This is the default and most widely tested option.
+
+```bash
+sbox run                  # Uses Claude by default
+sbox run --agent claude
+```
+
+### OpenCode
+
+Uses OpenCode as the AI agent. OpenCode must be installed in the sandbox environment for this to work.
+
+```bash
+sbox run --agent opencode
+```
+
+### Agent Resolution
+
+The agent is resolved from multiple sources (later overrides earlier):
+1. Global config (`default_agent` in `~/.config/sbox/config.yaml`)
+2. `sbox.yaml` file (`agent` field)
+3. Project config (`~/.config/sbox/projects/<hash>/config.yaml`)
+4. CLI flag (`--agent`)
 
 ## How It Works
 

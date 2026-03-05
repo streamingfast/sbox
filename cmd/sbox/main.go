@@ -36,6 +36,7 @@ func main() {
 		RunCommand,
 		ProfileGroup,
 		EnvGroup,
+		AgentGroup,
 		ConfigCommand,
 		CleanCommand,
 		ShellCommand,

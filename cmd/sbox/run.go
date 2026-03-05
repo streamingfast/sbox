@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -25,6 +26,10 @@ var RunCommand = Command(runE,
 		Backend types:
 		- sandbox (default): Uses Docker sandbox MicroVM for enhanced isolation
 		- container: Uses standard Docker container with named volume persistence
+
+		Agent types:
+		- claude (default): Uses Claude Code AI agent
+		- opencode: Uses OpenCode AI agent
 	`),
 	Flags(func(flags *pflag.FlagSet) {
 		flags.Bool("docker-socket", false, "Mount Docker socket into sandbox/container")
@@ -33,6 +38,7 @@ var RunCommand = Command(runE,
 		flags.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 		flags.Bool("debug", false, "Enable debug mode for docker commands")
 		flags.String("backend", "", "Backend type: 'sandbox' (default) or 'container'")
+		flags.String("agent", "", "Agent type: 'claude' (default) or 'opencode'")
 	}),
 )
 
@@ -107,12 +113,29 @@ func runE(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	agentFlag, err := cmd.Flags().GetString("agent")
+	if err != nil {
+		return fmt.Errorf("failed to get agent flag: %w", err)
+	}
+
+	// Validate agent flag if provided
+	if agentFlag != "" {
+		if err := sbox.ValidateAgent(agentFlag); err != nil {
+			return err
+		}
+	}
+
 	// Resolve which backend to use (CLI > sbox.yaml > project > global > default)
 	backendType := sbox.ResolveBackendType(backendFlag, sboxFile, projectConfig, config)
 	zlog.Debug("resolved backend type", zap.String("backend", string(backendType)))
 
-	// Persist the resolved backend to project config so shell/stop/info can find it
+	// Resolve which agent to use (CLI > sbox.yaml > project > global > default)
+	agentType := sbox.ResolveAgentType(agentFlag, sboxFile, projectConfig, config)
+	zlog.Debug("resolved agent type", zap.String("agent", string(agentType)))
+
+	// Persist the resolved backend and agent to project config so shell/stop/info can find it
 	projectConfig.Backend = string(backendType)
+	projectConfig.Agent = string(agentType)
 
 	// Get the backend implementation
 	backend, err := sbox.GetBackend(string(backendType), config)
@@ -121,8 +144,21 @@ func runE(cmd *cobra.Command, args []string) error {
 	}
 
 	// Generate sandbox name first (needed for lookup)
-	if projectConfig.SandboxName == "" {
-		sandboxName, err := sbox.GenerateSandboxName(workspaceDir)
+	// Regenerate if empty OR if the agent has changed (detected by checking if the name contains the current agent)
+	needsRegeneration := projectConfig.SandboxName == ""
+	if !needsRegeneration && projectConfig.SandboxName != "" {
+		// Check if the sandbox name matches the current agent
+		expectedPrefix := "sbox-" + string(agentType) + "-"
+		if !strings.HasPrefix(projectConfig.SandboxName, expectedPrefix) {
+			zlog.Info("agent changed, regenerating sandbox name",
+				zap.String("old_name", projectConfig.SandboxName),
+				zap.String("agent", string(agentType)))
+			needsRegeneration = true
+		}
+	}
+
+	if needsRegeneration {
+		sandboxName, err := sbox.GenerateSandboxName(workspaceDir, agentType)
 		if err != nil {
 			return fmt.Errorf("failed to generate sandbox name: %w", err)
 		}

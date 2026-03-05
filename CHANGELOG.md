@@ -4,6 +4,68 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## v1.4.0
+
+### Added
+
+- OpenCode support as an alternative AI agent to Claude
+  - `--agent` flag for `sbox run` to select the AI agent type (`claude` or `opencode`)
+  - `agent` field in `sbox.yaml` to configure agent per-project
+  - `agent` field in project config (persisted when using `--agent` flag)
+  - `default_agent` field in global config (`~/.config/sbox/config.yaml`)
+  - `sbox agent` command group for managing the default AI agent
+    - `sbox agent list` — show available agents
+    - `sbox agent set <agent>` — set default agent globally
+    - `sbox agent show` — show current default agent
+  - Agent resolution priority: CLI flag > sbox.yaml > project config > global config > default (claude)
+  - Entrypoint automatically detects and launches the configured agent (claude or opencode)
+  - Sandbox/container names now include agent type: `sbox-<agent>-<workspace>` (e.g., `sbox-opencode-myproject`)
+    - This allows running different agents for the same workspace
+    - Sandbox name is automatically regenerated when switching agents
+    - Previous sandboxes named `sbox-claude-<workspace>` will be automatically detected for Claude agent
+  - Agent-specific Docker sandbox templates:
+    - Claude agent uses `docker/sandbox-templates:claude-code`
+    - OpenCode agent uses `docker/sandbox-templates:opencode`
+    - Template is automatically selected based on the configured agent
+  - Agent abstraction via `AgentSpec` interface for extensibility
+    - Encapsulates agent-specific behavior (binary name, wrapper name, template image, config directory, binary discovery, exec args)
+    - Template builder generates agent-specific wrapper scripts (e.g., `claude-wrapper` or `opencode-wrapper`)
+    - Wrapper script automatically renames agent binary to `<name>-real` and symlinks to wrapper for proper initialization
+    - Template hash includes agent type to ensure separate template images for different agents
+    - Entrypoint uses agent-specific config directories (`.claude` for Claude, `.config/opencode` for OpenCode)
+    - Agent setup (CLAUDE.md/AGENTS.md, agents, plugins) works with appropriate config directory per agent
+    - Container backend uses agent-specific volume names (`sbox-claude-*` vs `sbox-opencode-*`)
+    - Container backend mounts agent config directory based on agent type (`.claude` or `.opencode`)
+    - Settings.json mount location is agent-aware
+    - Template build pre-creates agent config directory with proper ownership to avoid permission issues with volume mounts
+    - OpenCode agent uses appropriate command-line arguments (no `--dangerously-skip-permissions` flag)
+    - Entrypoint passes workspace path to OpenCode when no arguments provided
+    - Config now supports agent-specific home directories (`opencode_home` defaults to `~/.config/opencode`, `claude_home` defaults to `~/.claude`)
+    - Plugins and agents are loaded from agent-specific home directories (`~/.config/opencode` for OpenCode, `~/.claude` for Claude)
+    - Settings.json files mounted from appropriate agent home directory
+    - Container config directory matches host XDG conventions (`.config/opencode` for OpenCode)
+    - OpenCode config file (`~/.config/opencode/opencode.json`) is automatically prepared via `.sbox/` directory:
+      - If no config exists, a default one is created with full permissions
+      - Existing config is loaded and permissions are automatically set to `{"*": "allow"}` for sandbox/container environment
+      - All other user config fields (like `model`, preferences, etc.) are preserved
+      - Ensures OpenCode runs with full permissions in the isolated environment
+    - OpenCode authentication file (`~/.local/share/opencode/auth.json`) is automatically copied if present:
+      - Shares local authentication credentials with the sandbox/container
+      - Enables seamless OpenCode usage without re-authentication
+      - Copied to `/home/agent/.local/share/opencode/auth.json` in the container
+    - CLAUDE.md/AGENTS.md concatenation works for both agents:
+      - Same walking and concatenation logic for all agents
+      - Claude: Final file placed at `~/.claude/CLAUDE.md`
+      - OpenCode: Final file placed at `~/.config/opencode/AGENTS.md`
+      - Discovers and merges all CLAUDE.md and AGENTS.md files from parent directories
+      - Includes backend-specific context (sandbox vs container)
+      - Symlink deduplication: If CLAUDE.md is a symlink to AGENTS.md (or vice versa), only includes the file once
+      - Renamed functions for clarity: `setupCLAUDEMD` → `setupRules`, `prepareCLAUDEMD` → `prepareRules`
+
+### Fixed
+
+- OpenCode config file preparation now correctly preserves all user fields (like `model`, preferences, etc.) while only adding/overriding the `permission` field for sandbox safety
+
 ## v1.3.3
 
 ### Changed

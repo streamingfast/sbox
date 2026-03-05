@@ -21,6 +21,9 @@ func DiscoverMDFiles(startDir string) ([]string, error) {
 	}
 
 	var foundFiles []string
+	// Track real paths (after resolving symlinks) to avoid duplicates
+	// This prevents including the same file twice when CLAUDE.md is a symlink to AGENTS.md (or vice versa)
+	seenRealPaths := make(map[string]bool)
 	currentDir := absPath
 
 	// Walk up directory tree until we hit root
@@ -28,15 +31,41 @@ func DiscoverMDFiles(startDir string) ([]string, error) {
 		// Check for CLAUDE.md
 		claudePath := filepath.Join(currentDir, "CLAUDE.md")
 		if _, err := os.Stat(claudePath); err == nil {
-			foundFiles = append(foundFiles, claudePath)
-			zlog.Debug("found CLAUDE.md", zap.String("path", claudePath))
+			// Resolve symlinks to get real path
+			realPath, err := filepath.EvalSymlinks(claudePath)
+			if err != nil {
+				// If we can't resolve symlinks, use the original path
+				realPath = claudePath
+			}
+
+			// Only add if we haven't seen this real file before
+			if !seenRealPaths[realPath] {
+				foundFiles = append(foundFiles, claudePath)
+				seenRealPaths[realPath] = true
+				zlog.Debug("found CLAUDE.md", zap.String("path", claudePath), zap.String("real_path", realPath))
+			} else {
+				zlog.Debug("skipping CLAUDE.md (duplicate via symlink)", zap.String("path", claudePath), zap.String("real_path", realPath))
+			}
 		}
 
 		// Check for AGENTS.md
 		agentsPath := filepath.Join(currentDir, "AGENTS.md")
 		if _, err := os.Stat(agentsPath); err == nil {
-			foundFiles = append(foundFiles, agentsPath)
-			zlog.Debug("found AGENTS.md", zap.String("path", agentsPath))
+			// Resolve symlinks to get real path
+			realPath, err := filepath.EvalSymlinks(agentsPath)
+			if err != nil {
+				// If we can't resolve symlinks, use the original path
+				realPath = agentsPath
+			}
+
+			// Only add if we haven't seen this real file before
+			if !seenRealPaths[realPath] {
+				foundFiles = append(foundFiles, agentsPath)
+				seenRealPaths[realPath] = true
+				zlog.Debug("found AGENTS.md", zap.String("path", agentsPath), zap.String("real_path", realPath))
+			} else {
+				zlog.Debug("skipping AGENTS.md (duplicate via symlink)", zap.String("path", agentsPath), zap.String("real_path", realPath))
+			}
 		}
 
 		// Move to parent directory

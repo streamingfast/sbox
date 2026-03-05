@@ -28,11 +28,17 @@ func (b *SandboxBackend) Name() BackendType {
 
 // Run starts or attaches to a sandbox for the given workspace
 func (b *SandboxBackend) Run(opts BackendOptions) error {
+	// Resolve agent type
+	agentType := AgentType(opts.ProjectConfig.Agent)
+	if agentType == "" {
+		agentType = DefaultAgent
+	}
+
 	// Get sandbox name (should already be set by caller)
 	sandboxName := opts.ProjectConfig.SandboxName
 	if sandboxName == "" {
 		var err error
-		sandboxName, err = GenerateSandboxName(opts.WorkspaceDir)
+		sandboxName, err = GenerateSandboxName(opts.WorkspaceDir, agentType)
 		if err != nil {
 			return fmt.Errorf("failed to generate sandbox name: %w", err)
 		}
@@ -53,7 +59,7 @@ func (b *SandboxBackend) Run(opts BackendOptions) error {
 	if opts.SboxFile != nil && opts.SboxFile.Config != nil {
 		sboxFileEnvs = opts.SboxFile.Config.Envs
 	}
-	if err := PrepareSboxDirectory(opts.WorkspaceDir, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendSandbox); err != nil {
+	if err := PrepareSboxDirectory(opts.WorkspaceDir, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendSandbox, agentType); err != nil {
 		return fmt.Errorf("failed to prepare .sbox directory: %w", err)
 	}
 
@@ -67,7 +73,7 @@ func (b *SandboxBackend) Run(opts BackendOptions) error {
 	if existingSandbox == nil {
 		// Build custom template only when creating a new sandbox
 		// Template is now always required for sbox entrypoint
-		builder := NewTemplateBuilder(opts.Config, allProfiles)
+		builder := NewTemplateBuilder(opts.Config, allProfiles, agentType)
 		templateImage, err := builder.Build(opts.ForceRebuild)
 		if err != nil {
 			return fmt.Errorf("failed to build custom template: %w", err)
@@ -79,7 +85,7 @@ func (b *SandboxBackend) Run(opts BackendOptions) error {
 			zap.String("workspace", opts.WorkspaceDir),
 			zap.String("template", templateImage))
 
-		if err := CreateDockerSandbox(sandboxName, opts.WorkspaceDir, templateImage, opts.Debug); err != nil {
+		if err := CreateDockerSandbox(sandboxName, opts.WorkspaceDir, templateImage, agentType, opts.Debug); err != nil {
 			// Check if the error is "already exists" - this can happen if our sandbox
 			// lookup failed but the sandbox actually exists
 			if strings.Contains(err.Error(), "already exists") {

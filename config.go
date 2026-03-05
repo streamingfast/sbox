@@ -17,6 +17,9 @@ type Config struct {
 	// ClaudeHome is the path to Claude's home directory (default: ~/.claude)
 	ClaudeHome string `yaml:"claude_home"`
 
+	// OpenCodeHome is the path to OpenCode's home directory (default: ~/.opencode)
+	OpenCodeHome string `yaml:"opencode_home"`
+
 	// SboxDataDir is the path to sbox's data directory (default: ~/.sbox)
 	SboxDataDir string `yaml:"sbox_data_dir"`
 
@@ -34,6 +37,10 @@ type Config struct {
 	// DefaultBackend is the default backend type: "sandbox" (default) or "container"
 	// Can be overridden per-project via sbox.yaml or project config
 	DefaultBackend string `yaml:"default_backend"`
+
+	// DefaultAgent is the default agent type: "claude" (default) or "opencode"
+	// Can be overridden per-project via sbox.yaml or project config
+	DefaultAgent string `yaml:"default_agent"`
 }
 
 // ProjectConfig holds per-project configuration settings
@@ -65,6 +72,10 @@ type ProjectConfig struct {
 	// Backend overrides the default backend for this project
 	// Values: "sandbox", "container", or empty to use default
 	Backend string `yaml:"backend"`
+
+	// Agent overrides the default agent for this project
+	// Values: "claude", "opencode", or empty to use default
+	Agent string `yaml:"agent"`
 }
 
 // SboxFileConfig represents the configuration from a sbox.yaml file
@@ -85,6 +96,9 @@ type SboxFileConfig struct {
 
 	// Backend specifies the container backend: "sandbox" (default) or "container"
 	Backend string `yaml:"backend"`
+
+	// Agent specifies the AI agent to run: "claude" (default) or "opencode"
+	Agent string `yaml:"agent"`
 }
 
 // SboxFileLocation contains info about a loaded sbox.yaml file
@@ -111,6 +125,7 @@ func LoadConfig() (*Config, error) {
 	// Default configuration - use XDG-style ~/.config/sbox
 	config := &Config{
 		ClaudeHome:      filepath.Join(homeDir, ".claude"),
+		OpenCodeHome:    filepath.Join(homeDir, ".config", "opencode"),
 		SboxDataDir:     filepath.Join(homeDir, ".config", "sbox"),
 		DockerSocket:    "auto",
 		DefaultProfiles: []string{},
@@ -141,6 +156,7 @@ func LoadConfig() (*Config, error) {
 
 	// Ensure paths are absolute and expanded
 	config.ClaudeHome = expandPath(config.ClaudeHome)
+	config.OpenCodeHome = expandPath(config.OpenCodeHome)
 	config.SboxDataDir = expandPath(config.SboxDataDir)
 
 	zlog.Debug("loaded config",
@@ -503,6 +519,7 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 		DockerSocket: projectConfig.DockerSocket,
 		Envs:         projectConfig.Envs,
 		Backend:      projectConfig.Backend,
+		Agent:        projectConfig.Agent,
 	}
 
 	// Merge profiles (combine both lists, removing duplicates)
@@ -561,12 +578,18 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 		merged.Backend = sboxConfig.Backend
 	}
 
+	// Override agent if set in sbox.yaml file
+	if sboxConfig.Agent != "" {
+		merged.Agent = sboxConfig.Agent
+	}
+
 	zlog.Debug("merged project config with sbox.yaml file",
 		zap.Strings("profiles", merged.Profiles),
 		zap.Strings("volumes", merged.Volumes),
 		zap.Strings("envs", MaskSensitiveEnvs(merged.Envs)),
 		zap.String("docker_socket", merged.DockerSocket),
-		zap.String("backend", merged.Backend))
+		zap.String("backend", merged.Backend),
+		zap.String("agent", merged.Agent))
 
 	return merged, nil
 }
@@ -757,6 +780,18 @@ func MergeEnvs(globalEnvs, projectEnvs, sboxFileEnvs []string) (merged []string,
 	}
 
 	return merged, resolved
+}
+
+// GetAgentHome returns the home directory for the specified agent type
+func (c *Config) GetAgentHome(agent AgentType) string {
+	switch agent {
+	case AgentClaude:
+		return c.ClaudeHome
+	case AgentOpenCode:
+		return c.OpenCodeHome
+	default:
+		return c.ClaudeHome // fallback to Claude
+	}
 }
 
 // expandPath expands ~ to home directory and makes path absolute

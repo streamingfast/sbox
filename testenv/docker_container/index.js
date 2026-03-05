@@ -1,1 +1,0 @@
-console.log("Hello from sbox test project for Docker Container!");

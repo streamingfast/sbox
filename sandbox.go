@@ -15,6 +15,12 @@ import (
 // DefaultTemplateImage is the default Docker sandbox template image for Claude
 const DefaultTemplateImage = "docker/sandbox-templates:claude-code"
 
+// GetBaseTemplateForAgent returns the appropriate base template image for the given agent.
+func GetBaseTemplateForAgent(agent AgentType) string {
+	spec := GetAgentSpec(agent)
+	return spec.TemplateImage()
+}
+
 // SandboxOptions holds options for running the Docker sandbox
 type SandboxOptions struct {
 	// WorkspaceDir is the workspace directory to mount
@@ -55,11 +61,17 @@ type SandboxCommands struct {
 // This is the single source of truth for command construction, used for display purposes.
 // Returns the argument lists (not including "docker" itself).
 func BuildSandboxCommands(opts SandboxOptions) (*SandboxCommands, error) {
+	// Resolve agent type
+	agentType := AgentType(opts.ProjectConfig.Agent)
+	if agentType == "" {
+		agentType = DefaultAgent
+	}
+
 	// Generate sandbox name
 	sandboxName := opts.ProjectConfig.SandboxName
 	if sandboxName == "" {
 		var err error
-		sandboxName, err = GenerateSandboxName(opts.WorkspaceDir)
+		sandboxName, err = GenerateSandboxName(opts.WorkspaceDir, agentType)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate sandbox name: %w", err)
 		}
@@ -71,7 +83,7 @@ func BuildSandboxCommands(opts SandboxOptions) (*SandboxCommands, error) {
 	// Build template image name if profiles are specified
 	var templateImage string
 	if len(allProfiles) > 0 {
-		builder := NewTemplateBuilder(opts.Config, allProfiles)
+		builder := NewTemplateBuilder(opts.Config, allProfiles, agentType)
 		templateImage = builder.ImageName()
 	}
 
@@ -101,11 +113,17 @@ func BuildSandboxCommands(opts SandboxOptions) (*SandboxCommands, error) {
 // If the sandbox doesn't exist, it creates it first using `docker sandbox create`.
 // Then runs the sandbox using `docker sandbox run <name>`.
 func RunSandbox(opts SandboxOptions) error {
+	// Resolve agent type
+	agentType := AgentType(opts.ProjectConfig.Agent)
+	if agentType == "" {
+		agentType = DefaultAgent
+	}
+
 	// Get sandbox name (should already be set by caller)
 	sandboxName := opts.ProjectConfig.SandboxName
 	if sandboxName == "" {
 		var err error
-		sandboxName, err = GenerateSandboxName(opts.WorkspaceDir)
+		sandboxName, err = GenerateSandboxName(opts.WorkspaceDir, agentType)
 		if err != nil {
 			return fmt.Errorf("failed to generate sandbox name: %w", err)
 		}
@@ -126,7 +144,7 @@ func RunSandbox(opts SandboxOptions) error {
 	if opts.SboxFile != nil && opts.SboxFile.Config != nil {
 		sboxFileEnvs = opts.SboxFile.Config.Envs
 	}
-	if err := PrepareSboxDirectory(opts.WorkspaceDir, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendSandbox); err != nil {
+	if err := PrepareSboxDirectory(opts.WorkspaceDir, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendSandbox, agentType); err != nil {
 		return fmt.Errorf("failed to prepare .sbox directory: %w", err)
 	}
 
@@ -140,7 +158,7 @@ func RunSandbox(opts SandboxOptions) error {
 	if existingSandbox == nil {
 		// Build custom template only when creating a new sandbox
 		// Template is now always required for sbox entrypoint
-		builder := NewTemplateBuilder(opts.Config, allProfiles)
+		builder := NewTemplateBuilder(opts.Config, allProfiles, agentType)
 		templateImage, err := builder.Build(opts.ForceRebuild)
 		if err != nil {
 			return fmt.Errorf("failed to build custom template: %w", err)
@@ -152,7 +170,7 @@ func RunSandbox(opts SandboxOptions) error {
 			zap.String("workspace", opts.WorkspaceDir),
 			zap.String("template", templateImage))
 
-		if err := CreateDockerSandbox(sandboxName, opts.WorkspaceDir, templateImage, opts.Debug); err != nil {
+		if err := CreateDockerSandbox(sandboxName, opts.WorkspaceDir, templateImage, agentType, opts.Debug); err != nil {
 			// Check if the error is "already exists" - this can happen if our sandbox
 			// lookup failed but the sandbox actually exists
 			if strings.Contains(err.Error(), "already exists") {
@@ -230,9 +248,20 @@ func buildVolumeMounts(opts SandboxOptions, claudeMDPath string, claudeFlags *Cl
 	// We no longer mount ~/.claude/agents since the JSON format works better
 	// and avoids issues with mounting inside Docker sandbox
 
+	// Resolve agent type from opts
+	agentType := AgentType(opts.ProjectConfig.Agent)
+	if agentType == "" {
+		agentType = DefaultAgent
+	}
+
+	// Get agent-specific home directory
+	agentHome := opts.Config.GetAgentHome(agentType)
+	spec := GetAgentSpec(agentType)
+	configDir := spec.ConfigDirName()
+
 	// Mount plugins cache directory once, then use --plugin-dir for each plugin
 	// This avoids potential Docker limitations with many individual mounts
-	pluginPaths, err := GetInstalledPluginPaths(opts.Config.ClaudeHome)
+	pluginPaths, err := GetInstalledPluginPaths(agentHome)
 	if err != nil {
 		zlog.Warn("failed to get installed plugins, skipping plugin sharing", zap.Error(err))
 	} else if pluginPaths != nil {
@@ -250,19 +279,21 @@ func buildVolumeMounts(opts SandboxOptions, claudeMDPath string, claudeFlags *Cl
 	// Volume mounts don't work with Docker sandbox MicroVMs
 	_ = claudeMDPath // Unused, kept for backwards compatibility in function signature
 
-	// Mount ~/.claude/settings.json if it exists (MCP server configuration)
-	settingsPath := filepath.Join(opts.Config.ClaudeHome, "settings.json")
+	// Mount agent settings.json if it exists (MCP server configuration)
+	settingsPath := filepath.Join(agentHome, "settings.json")
 	if _, err := os.Stat(settingsPath); err == nil {
-		mounts = append(mounts, "-v", fmt.Sprintf("%s:/home/agent/.claude/settings.json:ro", settingsPath))
+		containerSettingsPath := fmt.Sprintf("/home/agent/%s/settings.json", configDir)
+		mounts = append(mounts, "-v", fmt.Sprintf("%s:%s:ro", settingsPath, containerSettingsPath))
 		zlog.Debug("mounting MCP settings file", zap.String("path", settingsPath))
 	} else {
 		zlog.Debug("MCP settings file not found, skipping", zap.String("path", settingsPath))
 	}
 
-	// Mount ~/.claude/settings.local.json if it exists (local MCP overrides)
-	settingsLocalPath := filepath.Join(opts.Config.ClaudeHome, "settings.local.json")
+	// Mount agent settings.local.json if it exists (local MCP overrides)
+	settingsLocalPath := filepath.Join(agentHome, "settings.local.json")
 	if _, err := os.Stat(settingsLocalPath); err == nil {
-		mounts = append(mounts, "-v", fmt.Sprintf("%s:/home/agent/.claude/settings.local.json:ro", settingsLocalPath))
+		containerSettingsLocalPath := fmt.Sprintf("/home/agent/%s/settings.local.json", configDir)
+		mounts = append(mounts, "-v", fmt.Sprintf("%s:%s:ro", settingsLocalPath, containerSettingsLocalPath))
 		zlog.Debug("mounting local MCP settings file", zap.String("path", settingsLocalPath))
 	} else {
 		zlog.Debug("local MCP settings file not found, skipping", zap.String("path", settingsLocalPath))
@@ -595,10 +626,10 @@ func parseSandboxLsOutput(output string) ([]DockerSandbox, error) {
 	return sandboxes, nil
 }
 
-// GenerateSandboxName generates a sandbox name from a workspace path.
-// Format: sbox-claude-<basename of workspace>
+// GenerateSandboxName generates a sandbox name from a workspace path and agent type.
+// Format: sbox-<agent>-<basename of workspace>
 // The name is sanitized to only contain letters, numbers, hyphens, and underscores.
-func GenerateSandboxName(workspaceDir string) (string, error) {
+func GenerateSandboxName(workspaceDir string, agent AgentType) (string, error) {
 	absPath, err := filepath.Abs(workspaceDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute path: %w", err)
@@ -622,7 +653,13 @@ func GenerateSandboxName(workspaceDir string) (string, error) {
 		sanitized = "workspace"
 	}
 
-	return "sbox-claude-" + sanitized, nil
+	// Use agent type in the name
+	agentName := string(agent)
+	if agentName == "" {
+		agentName = string(DefaultAgent)
+	}
+
+	return "sbox-" + agentName + "-" + sanitized, nil
 }
 
 // FindDockerSandboxByName finds a Docker sandbox by its name.
@@ -647,13 +684,20 @@ func FindDockerSandboxByName(name string) (*DockerSandbox, error) {
 
 // CreateDockerSandbox creates a new Docker sandbox with the given name and options.
 // Uses `docker sandbox create` command.
-func CreateDockerSandbox(name string, workspaceDir string, templateImage string, debug bool) error {
+func CreateDockerSandbox(name string, workspaceDir string, templateImage string, agent AgentType, debug bool) error {
 	absPath, err := filepath.Abs(workspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	// Build create command: docker sandbox [--debug] create --name <name> [--load-local-template] [--template <image>] claude <workspace>
+	// Determine agent binary name
+	if agent == "" {
+		agent = DefaultAgent
+	}
+	spec := GetAgentSpec(agent)
+	agentBinary := spec.BinaryName()
+
+	// Build create command: docker sandbox [--debug] create --name <name> [--template <image>] <agent> <workspace>
 	args := []string{"sandbox"}
 	if debug {
 		args = append(args, "--debug")
@@ -667,7 +711,7 @@ func CreateDockerSandbox(name string, workspaceDir string, templateImage string,
 	}
 
 	// Add the agent and workspace
-	args = append(args, "claude", absPath)
+	args = append(args, agentBinary, absPath)
 
 	zlog.Info("creating docker sandbox",
 		zap.String("name", name),
@@ -709,8 +753,19 @@ func FindDockerSandbox(workspaceDir string) (*DockerSandbox, error) {
 		return nil, err
 	}
 
+	// Load project config to get the agent type
+	projectConfig, _, err := GetProjectConfig(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load project config: %w", err)
+	}
+
+	agentType := AgentType(projectConfig.Agent)
+	if agentType == "" {
+		agentType = DefaultAgent
+	}
+
 	// First, try to find by the expected sandbox name
-	expectedName, _ := GenerateSandboxName(workspaceDir)
+	expectedName, _ := GenerateSandboxName(workspaceDir, agentType)
 	for _, sb := range sandboxes {
 		if sb.Name == expectedName {
 			zlog.Debug("found docker sandbox by name",

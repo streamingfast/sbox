@@ -1,4 +1,4 @@
-.PHONY: build build-image clean test
+.PHONY: build build-image clean test dev-binary dev-push
 
 # Build the sbox binary for the current platform
 build:

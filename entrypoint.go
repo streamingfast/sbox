@@ -87,6 +87,9 @@ type EntrypointConfig struct {
 
 	// Agents to install in the sandbox
 	Agents []EntrypointAgent `yaml:"agents,omitempty"`
+
+	// Agent specifies which AI agent to run ("claude" or "opencode")
+	Agent string `yaml:"agent,omitempty"`
 }
 
 // EntrypointPlugin describes a plugin to be installed in the sandbox
@@ -281,26 +284,31 @@ const DefaultSandboxClaudeHome = "/home/agent/.claude"
 // FindClaudeHome locates Claude's config directory inside the sandbox.
 // Docker sandbox mounts the host's .claude at the host path (e.g., /Users/username/.claude).
 // We search common locations to find where it actually is.
-func FindClaudeHome() string {
-	// Check environment variable first
-	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+func FindAgentHome(agentType AgentType) string {
+	spec := GetAgentSpec(agentType)
+	configDirName := spec.ConfigDirName()
+
+	// Check environment variable first (for backwards compatibility with CLAUDE_CONFIG_DIR)
+	envVar := strings.ToUpper(spec.BinaryName()) + "_CONFIG_DIR"
+	if dir := os.Getenv(envVar); dir != "" {
 		if _, err := os.Stat(dir); err == nil {
 			return dir
 		}
 	}
 
 	// Check default location
-	if _, err := os.Stat(DefaultSandboxClaudeHome); err == nil {
-		return DefaultSandboxClaudeHome
+	defaultHome := filepath.Join("/home/agent", configDirName)
+	if _, err := os.Stat(defaultHome); err == nil {
+		return defaultHome
 	}
 
 	// Search /Users (macOS host mounts)
 	entries, _ := os.ReadDir("/Users")
 	for _, e := range entries {
 		if e.IsDir() {
-			claudeDir := filepath.Join("/Users", e.Name(), ".claude")
-			if _, err := os.Stat(claudeDir); err == nil {
-				return claudeDir
+			agentDir := filepath.Join("/Users", e.Name(), configDirName)
+			if _, err := os.Stat(agentDir); err == nil {
+				return agentDir
 			}
 		}
 	}
@@ -309,15 +317,15 @@ func FindClaudeHome() string {
 	entries, _ = os.ReadDir("/home")
 	for _, e := range entries {
 		if e.IsDir() && e.Name() != "agent" { // Skip agent, already checked
-			claudeDir := filepath.Join("/home", e.Name(), ".claude")
-			if _, err := os.Stat(claudeDir); err == nil {
-				return claudeDir
+			agentDir := filepath.Join("/home", e.Name(), configDirName)
+			if _, err := os.Stat(agentDir); err == nil {
+				return agentDir
 			}
 		}
 	}
 
 	// Fallback to default
-	return DefaultSandboxClaudeHome
+	return defaultHome
 }
 
 // SboxEntrypointMarkerFile is written when sbox entrypoint runs successfully.
@@ -345,10 +353,10 @@ func RunEntrypoint(args []string) error {
 	elog.Info("workspace lookup", "WORKSPACE_DIR", os.Getenv("WORKSPACE_DIR"), "PWD", os.Getenv("PWD"), "result", workspaceDir)
 
 	if workspaceDir == "" {
-		// No workspace found, just exec claude directly
-		elog.Warn("workspace directory not found, exec claude directly")
-		zlog.Info("workspace directory not found, starting claude directly")
-		return execClaude(args, nil)
+		// No workspace found, just exec default agent directly
+		elog.Warn("workspace directory not found, exec default agent directly")
+		zlog.Info("workspace directory not found, starting default agent directly")
+		return execAgent(DefaultAgent, args, nil)
 	}
 
 	elog.Info("found workspace directory", "path", workspaceDir)
@@ -380,24 +388,32 @@ func RunEntrypoint(args []string) error {
 
 	config, err := ReadEntrypointConfig(workspaceDir)
 	if err != nil {
-		// If no config, just exec claude directly (backwards compatibility)
+		// If no config, just exec default agent directly (backwards compatibility)
 		if errors.Is(err, os.ErrNotExist) {
-			elog.Warn("no entrypoint config found, exec claude directly", "path", configPath)
-			zlog.Info("no entrypoint config found, starting claude directly")
-			return execClaude(args, nil)
+			elog.Warn("no entrypoint config found, exec default agent directly", "path", configPath)
+			zlog.Info("no entrypoint config found, starting default agent directly")
+			return execAgent(DefaultAgent, args, nil)
 		}
 		elog.Error("failed to read entrypoint config", "error", err)
 		return fmt.Errorf("failed to read entrypoint config: %w", err)
 	}
 
+	// Default to claude if no agent specified
+	agentType := config.Agent
+	if agentType == "" {
+		agentType = string(AgentClaude)
+	}
+
 	elog.Info("loaded entrypoint config",
 		"version", config.Version,
 		"plugins", len(config.Plugins),
-		"agents", len(config.Agents))
+		"agents", len(config.Agents),
+		"agent", agentType)
 	zlog.Info("loaded entrypoint config",
 		zap.Int("version", config.Version),
 		zap.Int("plugins", len(config.Plugins)),
-		zap.Int("agents", len(config.Agents)))
+		zap.Int("agents", len(config.Agents)),
+		zap.String("agent", agentType))
 
 	// Log plugin details
 	for i, p := range config.Plugins {
@@ -408,21 +424,22 @@ func RunEntrypoint(args []string) error {
 		elog.Debug("agent", "index", i, "name", a.Name, "path", a.Path)
 	}
 
-	// Find claude home
-	claudeHome := FindClaudeHome()
-	elog.Info("claude home directory", "path", claudeHome)
+	// Find agent home
+	agent := AgentType(agentType)
+	agentHome := FindAgentHome(agent)
+	elog.Info("agent home directory", "path", agentHome, "agent", agentType)
 
-	// Restore .claude cache if present (for persistence across recreations)
-	elog.Info("checking for claude cache to restore")
-	if err := restoreClaudeCache(workspaceDir, claudeHome); err != nil {
-		elog.Warn("failed to restore claude cache", "error", err)
+	// Restore agent cache if present (for persistence across recreations)
+	elog.Info("checking for agent cache to restore")
+	if err := restoreClaudeCache(workspaceDir, agentHome); err != nil {
+		elog.Warn("failed to restore agent cache", "error", err)
 		// Non-fatal - continue anyway
 	}
 
-	// Setup CLAUDE.md (copy from .sbox to ~/.claude)
-	elog.Info("setting up CLAUDE.md")
-	if err := setupCLAUDEMD(workspaceDir); err != nil {
-		elog.Error("failed to setup CLAUDE.md", "error", err)
+	// Setup CLAUDE.md/AGENTS.md (copy from .sbox to agent home)
+	elog.Info("setting up CLAUDE.md/AGENTS.md")
+	if err := setupRules(workspaceDir, agent); err != nil {
+		elog.Error("failed to setup rules file", "error", err)
 		// Non-fatal - continue anyway
 	}
 
@@ -435,9 +452,55 @@ func RunEntrypoint(args []string) error {
 
 	// Setup agents
 	elog.Info("setting up agents", "count", len(config.Agents))
-	if err := setupAgents(workspaceDir, config.Agents); err != nil {
+	if err := setupAgents(workspaceDir, agent, config.Agents); err != nil {
 		elog.Error("failed to setup agents", "error", err)
 		return fmt.Errorf("failed to setup agents: %w", err)
+	}
+
+	// Setup OpenCode config and auth files
+	if agent == AgentOpenCode {
+		// Setup opencode.json (config file)
+		opencodeConfigSrc := filepath.Join(workspaceDir, ".sbox", "opencode.json")
+		if _, err := os.Stat(opencodeConfigSrc); err == nil {
+			opencodeConfigDst := filepath.Join(agentHome, "opencode.json")
+			elog.Info("copying opencode.json to agent home", "src", opencodeConfigSrc, "dst", opencodeConfigDst)
+			if err := copyFile(opencodeConfigSrc, opencodeConfigDst); err != nil {
+				elog.Warn("failed to copy opencode.json", "error", err)
+				zlog.Warn("failed to copy opencode.json to agent home", zap.Error(err))
+				// Non-fatal - continue anyway
+			} else {
+				elog.Info("successfully copied opencode.json")
+				zlog.Info("copied opencode.json to agent home", zap.String("dst", opencodeConfigDst))
+			}
+		} else {
+			elog.Debug("opencode.json not found in .sbox, skipping", "path", opencodeConfigSrc)
+			zlog.Debug("opencode.json not found in .sbox, skipping", zap.String("path", opencodeConfigSrc))
+		}
+
+		// Setup auth.json (authentication file)
+		opencodeAuthSrc := filepath.Join(workspaceDir, ".sbox", "opencode-auth.json")
+		if _, err := os.Stat(opencodeAuthSrc); err == nil {
+			// OpenCode auth goes in XDG data directory: ~/.local/share/opencode/auth.json
+			authDir := filepath.Join("/home/agent", ".local", "share", "opencode")
+			if err := os.MkdirAll(authDir, 0755); err != nil {
+				elog.Warn("failed to create auth directory", "dir", authDir, "error", err)
+				zlog.Warn("failed to create opencode auth directory", zap.String("dir", authDir), zap.Error(err))
+			} else {
+				opencodeAuthDst := filepath.Join(authDir, "auth.json")
+				elog.Info("copying opencode auth.json to data directory", "src", opencodeAuthSrc, "dst", opencodeAuthDst)
+				if err := copyFile(opencodeAuthSrc, opencodeAuthDst); err != nil {
+					elog.Warn("failed to copy opencode auth.json", "error", err)
+					zlog.Warn("failed to copy opencode auth.json", zap.Error(err))
+					// Non-fatal - continue anyway
+				} else {
+					elog.Info("successfully copied opencode auth.json")
+					zlog.Info("copied opencode auth.json to data directory", zap.String("dst", opencodeAuthDst))
+				}
+			}
+		} else {
+			elog.Debug("opencode auth.json not found in .sbox, skipping", "path", opencodeAuthSrc)
+			zlog.Debug("opencode auth.json not found in .sbox, skipping", zap.String("path", opencodeAuthSrc))
+		}
 	}
 
 	// Load environment variables
@@ -460,35 +523,56 @@ func RunEntrypoint(args []string) error {
 		}
 	}
 
-	elog.Info("=== setup complete, exec claude ===", "pluginDirs", pluginDirs)
+	elog.Info("=== setup complete, exec agent ===", "agent", agentType, "pluginDirs", pluginDirs)
 
-	// Exec claude (replaces current process)
-	return execClaude(args, pluginDirs)
+	// For OpenCode, if no args provided, pass the workspace directory
+	// OpenCode expects: opencode [project]
+	agentTypeEnum := AgentType(agentType)
+	if agentTypeEnum == AgentOpenCode && len(args) == 0 {
+		args = []string{workspaceDir}
+		elog.Info("adding workspace path as first arg for OpenCode", "workspace", workspaceDir)
+	}
+
+	// Exec the specified agent (replaces current process)
+	return execAgent(agentTypeEnum, args, pluginDirs)
 }
 
-// setupCLAUDEMD copies .sbox/CLAUDE.md to ~/.claude/CLAUDE.md
-func setupCLAUDEMD(workspaceDir string) error {
+// setupRules copies .sbox/CLAUDE.md to agent home/CLAUDE.md or AGENTS.md
+// depending on the agent type (Claude uses CLAUDE.md, OpenCode uses AGENTS.md)
+func setupRules(workspaceDir string, agentType AgentType) error {
 	srcPath := filepath.Join(workspaceDir, ".sbox", "CLAUDE.md")
 
 	// Check if source exists
 	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
-		zlog.Debug("no CLAUDE.md in .sbox, skipping")
+		zlog.Debug("no rules file in .sbox, skipping")
 		return nil
 	}
 
-	claudeHome := FindClaudeHome()
-	dstPath := filepath.Join(claudeHome, "CLAUDE.md")
+	agentHome := FindAgentHome(agentType)
 
-	// Ensure claude home exists
-	if err := os.MkdirAll(claudeHome, 0755); err != nil {
-		return fmt.Errorf("failed to create claude home: %w", err)
+	// Determine destination filename based on agent type
+	// Claude uses CLAUDE.md for backward compatibility
+	// OpenCode uses AGENTS.md as the standard name
+	var dstFilename string
+	if agentType == AgentOpenCode {
+		dstFilename = "AGENTS.md"
+	} else {
+		dstFilename = "CLAUDE.md"
+	}
+	dstPath := filepath.Join(agentHome, dstFilename)
+
+	// Ensure agent home exists
+	if err := os.MkdirAll(agentHome, 0755); err != nil {
+		return fmt.Errorf("failed to create agent home: %w", err)
 	}
 
 	if err := copyFile(srcPath, dstPath); err != nil {
-		return fmt.Errorf("failed to copy CLAUDE.md: %w", err)
+		return fmt.Errorf("failed to copy %s: %w", dstFilename, err)
 	}
 
-	zlog.Info("installed CLAUDE.md",
+	zlog.Info("installed agent instructions file",
+		zap.String("agent", string(agentType)),
+		zap.String("filename", dstFilename),
 		zap.String("src", srcPath),
 		zap.String("dst", dstPath))
 
@@ -503,17 +587,22 @@ func setupPlugins(workspaceDir string, plugins []EntrypointPlugin) error {
 	return nil
 }
 
-// setupAgents copies agents from .sbox/agents/ to ~/.claude/agents/
-func setupAgents(workspaceDir string, agents []EntrypointAgent) error {
+// setupAgents copies agents from .sbox/agents/ to agent home/agents/
+func setupAgents(workspaceDir string, agentType AgentType, agents []EntrypointAgent) error {
 	if len(agents) == 0 {
 		zlog.Debug("no agents to setup")
 		return nil
 	}
 
-	claudeHome := FindClaudeHome()
-	zlog.Info("using claude home directory for agents", zap.String("path", claudeHome))
+	agentHome := FindAgentHome(agentType)
+	zlog.Info("using agent home directory for agents", zap.String("path", agentHome), zap.String("agent", string(agentType)))
 
-	agentsDir := filepath.Join(claudeHome, "agents")
+	// Ensure agent home exists with proper permissions
+	if err := os.MkdirAll(agentHome, 0755); err != nil {
+		return fmt.Errorf("failed to create agent home directory: %w", err)
+	}
+
+	agentsDir := filepath.Join(agentHome, "agents")
 	if err := os.MkdirAll(agentsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create agents directory: %w", err)
 	}
@@ -654,73 +743,38 @@ func loadEntrypointEnv(workspaceDir string) error {
 	return nil
 }
 
-// execClaude replaces the current process with claude using syscall.Exec
-// pluginDirs is a list of directories to add via --plugin-dir flags
-func execClaude(args []string, pluginDirs []string) error {
-	claudePath, err := findClaude()
+// execAgent replaces the current process with the specified agent using syscall.Exec
+// Uses the AgentSpec interface to get agent-specific configuration
+func execAgent(agentType AgentType, args []string, pluginDirs []string) error {
+	spec := GetAgentSpec(agentType)
+
+	// Find the agent binary
+	binaryPath, err := spec.FindBinary()
 	if err != nil {
 		if elog != nil {
-			elog.Error("failed to find claude", "error", err)
+			elog.Error("failed to find agent binary", "agent", agentType, "error", err)
 		}
-		return fmt.Errorf("failed to find claude: %w", err)
+		fmt.Fprintf(os.Stderr, "\nERROR: %s binary not found in the sandbox.\n", spec.BinaryName())
+		fmt.Fprintf(os.Stderr, "%s must be installed in the sandbox to use --agent=%s\n", spec.BinaryName(), agentType)
+		fmt.Fprintf(os.Stderr, "Searched locations: /home/agent/.local/bin/%s, /usr/local/bin/%s, /usr/bin/%s\n\n",
+			spec.BinaryName(), spec.BinaryName(), spec.BinaryName())
+		return fmt.Errorf("failed to find %s: %w", spec.BinaryName(), err)
 	}
 
-	// Build argv: claude --dangerously-skip-permissions [--plugin-dir DIR]... [args...]
-	argv := []string{"claude", "--dangerously-skip-permissions"}
-
-	// Add plugin directories
-	for _, dir := range pluginDirs {
-		argv = append(argv, "--plugin-dir", dir)
-	}
-
+	// Build argv with agent-specific arguments plus additional args
+	argv := spec.ExecArgs(pluginDirs)
 	argv = append(argv, args...)
 
 	if elog != nil {
-		elog.Info("executing claude (syscall.Exec)", "path", claudePath, "argv", argv)
+		elog.Info("executing agent (syscall.Exec)", "agent", agentType, "path", binaryPath, "argv", argv)
 	}
-	zlog.Info("executing claude",
-		zap.String("path", claudePath),
+	zlog.Info("executing agent",
+		zap.String("agent", string(agentType)),
+		zap.String("path", binaryPath),
 		zap.Strings("args", argv))
 
 	// Exec replaces current process (log file will be closed automatically)
-	return syscall.Exec(claudePath, argv, os.Environ())
-}
-
-// findClaude locates the real claude binary (claude-real, renamed by sbox wrapper)
-func findClaude() (string, error) {
-	// Check common locations - look for claude-real first (renamed by our wrapper)
-	paths := []string{
-		"/home/agent/.local/bin/claude-real",
-		"/usr/local/bin/claude-real",
-		"/usr/bin/claude-real",
-		// Fallback to claude in case wrapper wasn't installed
-		"/home/agent/.local/bin/claude",
-		"/usr/local/bin/claude",
-		"/usr/bin/claude",
-	}
-
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-
-	// Try PATH - look for claude-real first
-	pathEnv := os.Getenv("PATH")
-	for _, dir := range strings.Split(pathEnv, ":") {
-		p := filepath.Join(dir, "claude-real")
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-	for _, dir := range strings.Split(pathEnv, ":") {
-		p := filepath.Join(dir, "claude")
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-
-	return "", fmt.Errorf("claude not found in known locations or PATH")
+	return syscall.Exec(binaryPath, argv, os.Environ())
 }
 
 // copyDir recursively copies a directory
@@ -783,13 +837,14 @@ func copyFile(src, dst string) error {
 // PrepareSboxDirectory populates the .sbox/ directory in the workspace with
 // plugins, agents, env vars, CLAUDE.md, and the entrypoint config. This is called by
 // `sbox run` before starting the sandbox.
-func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, projectEnvs, sboxFileEnvs []string, backend BackendType) error {
+func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, projectEnvs, sboxFileEnvs []string, backend BackendType, agent AgentType) error {
 	sboxDir := filepath.Join(workspaceDir, ".sbox")
 
 	zlog.Info("preparing .sbox directory",
 		zap.String("workspace", workspaceDir),
 		zap.String("sbox_dir", sboxDir),
-		zap.String("backend", string(backend)))
+		zap.String("backend", string(backend)),
+		zap.String("agent", string(agent)))
 
 	// Create .sbox directory
 	if err := os.MkdirAll(sboxDir, 0755); err != nil {
@@ -797,15 +852,23 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 	}
 
 	// Prepare merged CLAUDE.md file with backend-specific context
-	if err := prepareCLAUDEMD(workspaceDir, sboxDir, backend); err != nil {
-		zlog.Warn("failed to prepare CLAUDE.md", zap.Error(err))
-		// Continue - CLAUDE.md is optional
+	if err := prepareRules(workspaceDir, sboxDir, backend); err != nil {
+		zlog.Warn("failed to prepare rules file", zap.Error(err))
+		// Continue - rules file is optional
 	}
 
-	entrypointConfig := &EntrypointConfig{}
+	entrypointConfig := &EntrypointConfig{
+		Agent: string(agent),
+	}
+
+	// Copy plugins and agents from agent-specific home directory
+	agentHome := config.GetAgentHome(agent)
+	zlog.Info("preparing plugins and agents",
+		zap.String("agent", string(agent)),
+		zap.String("agent_home", agentHome))
 
 	// Copy plugins
-	plugins, err := preparePlugins(config.ClaudeHome, sboxDir)
+	plugins, err := preparePlugins(agentHome, sboxDir)
 	if err != nil {
 		zlog.Warn("failed to prepare plugins", zap.Error(err))
 		// Continue - plugins are optional
@@ -814,12 +877,24 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 	}
 
 	// Copy agents
-	agents, err := prepareAgents(config.ClaudeHome, sboxDir)
+	agents, err := prepareAgents(agentHome, sboxDir)
 	if err != nil {
 		zlog.Warn("failed to prepare agents", zap.Error(err))
 		// Continue - agents are optional
 	} else {
 		entrypointConfig.Agents = agents
+	}
+
+	// Prepare OpenCode files (config and auth)
+	if agent == AgentOpenCode {
+		if err := prepareOpencodeConfig(agentHome, sboxDir); err != nil {
+			zlog.Warn("failed to prepare opencode.json", zap.Error(err))
+			// Non-fatal - continue anyway
+		}
+		if err := prepareOpencodeAuth(sboxDir); err != nil {
+			zlog.Warn("failed to prepare opencode auth.json", zap.Error(err))
+			// Non-fatal - continue anyway
+		}
 	}
 
 	// Write entrypoint config
@@ -984,6 +1059,98 @@ func prepareAgents(claudeHome, sboxDir string) ([]EntrypointAgent, error) {
 	return agents, nil
 }
 
+// prepareOpencodeConfig creates or updates opencode.json with full permissions for sandbox use.
+// If the user has an existing config, it loads it and ensures permissions are set to allow all.
+// If no config exists, it creates a default one with full permissions.
+// All other user config fields (like "model") are preserved.
+func prepareOpencodeConfig(agentHome, sboxDir string) error {
+	opencodeConfigPath := filepath.Join(agentHome, "opencode.json")
+	dstPath := filepath.Join(sboxDir, "opencode.json")
+
+	// Use generic map to preserve all user fields
+	config := make(map[string]interface{})
+
+	// Try to read existing config
+	if data, err := os.ReadFile(opencodeConfigPath); err == nil {
+		// Parse existing config as generic JSON
+		if err := json.Unmarshal(data, &config); err != nil {
+			zlog.Warn("failed to parse existing opencode.json, using default",
+				zap.String("path", opencodeConfigPath),
+				zap.Error(err))
+			// Fall through to use default config (empty map)
+			config = make(map[string]interface{})
+		} else {
+			zlog.Info("loaded existing opencode.json", zap.String("path", opencodeConfigPath))
+		}
+	} else if !os.IsNotExist(err) {
+		// File exists but couldn't be read
+		zlog.Warn("failed to read opencode.json, using default",
+			zap.String("path", opencodeConfigPath),
+			zap.Error(err))
+	} else {
+		zlog.Info("no opencode.json found, creating default", zap.String("path", opencodeConfigPath))
+	}
+
+	// Ensure schema is set if not present
+	if _, hasSchema := config["$schema"]; !hasSchema {
+		config["$schema"] = "https://opencode.ai/config.json"
+	}
+
+	// Always set full permissions for sandbox/container environment
+	// This overrides any existing permission settings
+	config["permission"] = map[string]string{
+		"*": "allow",
+	}
+
+	// Write config to .sbox/
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal opencode config: %w", err)
+	}
+
+	if err := os.WriteFile(dstPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write opencode config: %w", err)
+	}
+
+	zlog.Info("prepared opencode.json with full permissions",
+		zap.String("dst", dstPath),
+		zap.Int("fields", len(config)))
+
+	return nil
+}
+
+// prepareOpencodeAuth copies the OpenCode auth.json file if it exists.
+// Auth file is located at ~/.local/share/opencode/auth.json on the host.
+func prepareOpencodeAuth(sboxDir string) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	// OpenCode auth is stored in XDG data directory
+	authPath := filepath.Join(homeDir, ".local", "share", "opencode", "auth.json")
+	dstPath := filepath.Join(sboxDir, "opencode-auth.json")
+
+	// Check if auth file exists
+	if _, err := os.Stat(authPath); os.IsNotExist(err) {
+		zlog.Debug("opencode auth.json not found, skipping", zap.String("path", authPath))
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("failed to stat auth file: %w", err)
+	}
+
+	// Copy auth file as-is
+	if err := copyFile(authPath, dstPath); err != nil {
+		return fmt.Errorf("failed to copy auth file: %w", err)
+	}
+
+	zlog.Info("copied opencode auth.json to .sbox",
+		zap.String("src", authPath),
+		zap.String("dst", dstPath))
+
+	return nil
+}
+
 // resolveEnvs merges and resolves environment variables from all sources.
 // Passthrough variables (NAME without =) are resolved from the current environment.
 // Returns a slice of KEY=value strings ready to write to .sbox/env.
@@ -1109,9 +1276,9 @@ func restoreClaudeCache(workspaceDir, claudeHome string) error {
 	return nil
 }
 
-// prepareCLAUDEMD uses PrepareMDForSandbox to discover and concatenate MD files,
-// then copies the result to .sbox/CLAUDE.md
-func prepareCLAUDEMD(workspaceDir, sboxDir string, backend BackendType) error {
+// prepareRules uses PrepareMDForSandbox to discover and concatenate MD files,
+// then copies the result to .sbox/CLAUDE.md. These rules apply to all agent types.
+func prepareRules(workspaceDir, sboxDir string, backend BackendType) error {
 	// Use existing function to discover and concatenate CLAUDE.md and AGENTS.md files
 	// with backend-specific context
 	srcPath, err := PrepareMDForSandbox(workspaceDir, backend)
@@ -1119,13 +1286,13 @@ func prepareCLAUDEMD(workspaceDir, sboxDir string, backend BackendType) error {
 		return fmt.Errorf("failed to prepare MD files: %w", err)
 	}
 
-	// Copy to .sbox/CLAUDE.md
+	// Copy to .sbox/CLAUDE.md (shared for all agents)
 	dstPath := filepath.Join(sboxDir, "CLAUDE.md")
 	if err := copyFile(srcPath, dstPath); err != nil {
-		return fmt.Errorf("failed to copy CLAUDE.md to .sbox: %w", err)
+		return fmt.Errorf("failed to copy rules file to .sbox: %w", err)
 	}
 
-	zlog.Info("prepared CLAUDE.md in .sbox",
+	zlog.Info("prepared rules file in .sbox",
 		zap.String("src", srcPath),
 		zap.String("dst", dstPath))
 
