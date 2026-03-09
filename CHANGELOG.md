@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+### Added
+
+- Transfer `tui.json` from `~/.config/opencode/tui.json` to `.sbox/` (host→sandbox) and from `.sbox/tui.json` to agent home (sandbox entrypoint) for OpenCode
+
 ## v1.4.0
 
 ### Added

@@ -477,6 +477,24 @@ func RunEntrypoint(args []string) error {
 			zlog.Debug("opencode.json not found in .sbox, skipping", zap.String("path", opencodeConfigSrc))
 		}
 
+		// Setup tui.json (TUI config file)
+		opencodeTUIConfigSrc := filepath.Join(workspaceDir, ".sbox", "tui.json")
+		if _, err := os.Stat(opencodeTUIConfigSrc); err == nil {
+			opencodeTUIConfigDst := filepath.Join(agentHome, "tui.json")
+			elog.Info("copying tui.json to agent home", "src", opencodeTUIConfigSrc, "dst", opencodeTUIConfigDst)
+			if err := copyFile(opencodeTUIConfigSrc, opencodeTUIConfigDst); err != nil {
+				elog.Warn("failed to copy tui.json", "error", err)
+				zlog.Warn("failed to copy tui.json to agent home", zap.Error(err))
+				// Non-fatal - continue anyway
+			} else {
+				elog.Info("successfully copied tui.json")
+				zlog.Info("copied tui.json to agent home", zap.String("dst", opencodeTUIConfigDst))
+			}
+		} else {
+			elog.Debug("tui.json not found in .sbox, skipping", "path", opencodeTUIConfigSrc)
+			zlog.Debug("tui.json not found in .sbox, skipping", zap.String("path", opencodeTUIConfigSrc))
+		}
+
 		// Setup auth.json (authentication file)
 		opencodeAuthSrc := filepath.Join(workspaceDir, ".sbox", "opencode-auth.json")
 		if _, err := os.Stat(opencodeAuthSrc); err == nil {
@@ -895,6 +913,10 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 			zlog.Warn("failed to prepare opencode auth.json", zap.Error(err))
 			// Non-fatal - continue anyway
 		}
+		if err := prepareOpencodeTUIConfig(agentHome, sboxDir); err != nil {
+			zlog.Warn("failed to prepare tui.json", zap.Error(err))
+			// Non-fatal - continue anyway
+		}
 	}
 
 	// Write entrypoint config
@@ -1115,6 +1137,29 @@ func prepareOpencodeConfig(agentHome, sboxDir string) error {
 	zlog.Info("prepared opencode.json with full permissions",
 		zap.String("dst", dstPath),
 		zap.Int("fields", len(config)))
+
+	return nil
+}
+
+// prepareOpencodeTUIConfig copies tui.json from the agent home to .sbox/ if it exists.
+func prepareOpencodeTUIConfig(agentHome, sboxDir string) error {
+	srcPath := filepath.Join(agentHome, "tui.json")
+	dstPath := filepath.Join(sboxDir, "tui.json")
+
+	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+		zlog.Debug("tui.json not found, skipping", zap.String("path", srcPath))
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("failed to stat tui.json: %w", err)
+	}
+
+	if err := copyFile(srcPath, dstPath); err != nil {
+		return fmt.Errorf("failed to copy tui.json: %w", err)
+	}
+
+	zlog.Info("copied tui.json to .sbox",
+		zap.String("src", srcPath),
+		zap.String("dst", dstPath))
 
 	return nil
 }
