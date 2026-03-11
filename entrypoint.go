@@ -1,6 +1,7 @@
 package sbox
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,11 +11,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/streamingfast/sbox/claude"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
@@ -90,6 +93,16 @@ type EntrypointConfig struct {
 
 	// Agent specifies which AI agent to run ("claude" or "opencode")
 	Agent string `yaml:"agent,omitempty"`
+
+	// Prompt is an optional prompt to pass to the agent via -p flag.
+	// When set, the agent runs non-interactively with this prompt.
+	// Used by `sbox loop` to pass the loop prompt to the agent.
+	Prompt string `yaml:"prompt,omitempty"`
+
+	// Loop mode fields — when LoopMode is true, the entrypoint runs the agent
+	// in a loop until the goal is confirmed complete (twice in a row).
+	LoopMode      bool `yaml:"loop_mode,omitempty"`
+	MaxIterations int  `yaml:"max_iterations,omitempty"`
 }
 
 // EntrypointPlugin describes a plugin to be installed in the sandbox
@@ -336,6 +349,14 @@ const SboxEntrypointMarkerFile = "/tmp/sbox-entrypoint-ran"
 // for persistence across sandbox recreations.
 const ClaudeCacheDir = "claude-cache"
 
+// OpenCodeCacheDir is the subdirectory in .sbox/ where we cache the .config/opencode folder
+// for persistence across sandbox recreations.
+const OpenCodeCacheDir = "opencode-cache"
+
+// OpenCodeShareCacheDir is the subdirectory in .sbox/ where we cache the .local/share/opencode folder
+// for persistence across sandbox recreations.
+const OpenCodeShareCacheDir = "opencode-share-cache"
+
 // RunEntrypoint executes the entrypoint logic inside the sandbox.
 // It reads the configuration from .sbox/, sets up plugins/agents/env,
 // then execs claude with the provided arguments.
@@ -431,7 +452,7 @@ func RunEntrypoint(args []string) error {
 
 	// Restore agent cache if present (for persistence across recreations)
 	elog.Info("checking for agent cache to restore")
-	if err := restoreClaudeCache(workspaceDir, agentHome); err != nil {
+	if err := restoreAgentCache(workspaceDir, agent, agentHome); err != nil {
 		elog.Warn("failed to restore agent cache", "error", err)
 		// Non-fatal - continue anyway
 	}
@@ -519,6 +540,13 @@ func RunEntrypoint(args []string) error {
 			elog.Debug("opencode auth.json not found in .sbox, skipping", "path", opencodeAuthSrc)
 			zlog.Debug("opencode auth.json not found in .sbox, skipping", zap.String("path", opencodeAuthSrc))
 		}
+
+		// Restore share cache AFTER individual file setup so cached state from a previous
+		// session takes precedence over the initially seeded files (e.g. auth.json).
+		if err := restoreOpenCodeShareCache(workspaceDir); err != nil {
+			elog.Warn("failed to restore opencode share cache", "error", err)
+			// Non-fatal - continue anyway
+		}
 	}
 
 	// Load environment variables
@@ -542,6 +570,22 @@ func RunEntrypoint(args []string) error {
 	}
 
 	elog.Info("=== setup complete, exec agent ===", "agent", agentType, "pluginDirs", pluginDirs)
+
+	// Loop mode: run the agent repeatedly until the goal is confirmed complete.
+	// The entrypoint handles all iterations internally so the sandbox stays warm.
+	if config.LoopMode && config.Prompt != "" {
+		elog.Info("entering loop mode", "prompt_length", len(config.Prompt), "max_iterations", config.MaxIterations)
+		return runLoop(config, AgentType(agentType), args, pluginDirs, workspaceDir)
+	}
+
+	// Single prompt mode (non-loop): run agent once with stream transformer.
+	if config.Prompt != "" {
+		elog.Info("adding prompt from entrypoint config", "prompt_length", len(config.Prompt))
+		// Flags first, then positional prompt last
+		args = append([]string{"-p", "--output-format=stream-json", "--verbose"}, args...)
+		args = append(args, config.Prompt)
+		return runAgentWithStreamTransformer(AgentType(agentType), args, pluginDirs)
+	}
 
 	// For OpenCode, if no args provided, pass the workspace directory
 	// OpenCode expects: opencode [project]
@@ -795,6 +839,135 @@ func execAgent(agentType AgentType, args []string, pluginDirs []string) error {
 	return syscall.Exec(binaryPath, argv, os.Environ())
 }
 
+// runAgentWithStreamTransformer spawns the agent as a subprocess and pipes its
+// stdout through a stream-json pretty printer. Used in loop mode where the agent
+// outputs stream-json and we want to display human-readable progress.
+func runAgentWithStreamTransformer(agentType AgentType, args []string, pluginDirs []string) error {
+	spec := GetAgentSpec(agentType)
+
+	binaryPath, err := spec.FindBinary()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nERROR: %s binary not found in the sandbox.\n", spec.BinaryName())
+		return fmt.Errorf("failed to find %s: %w", spec.BinaryName(), err)
+	}
+
+	argv := spec.ExecArgs(pluginDirs)
+	argv = append(argv, args...)
+
+	if elog != nil {
+		elog.Info("running agent with stream transformer", "agent", agentType, "path", binaryPath, "argv", argv)
+	}
+
+	cmd := exec.Command(binaryPath, argv[1:]...) // argv[0] is the binary name
+	cmd.Stdin = os.Stdin
+	cmd.Stderr = os.Stderr
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start agent: %w", err)
+	}
+
+	printer := claude.NewStreamPrinter(os.Stdout)
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer for large JSON lines
+	for scanner.Scan() {
+		printer.ProcessLine(scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		if elog != nil {
+			elog.Error("scanner error reading agent stdout", "error", err)
+		}
+	}
+
+	return cmd.Wait()
+}
+
+// LoopPromptSuffix is appended to the user's prompt to instruct the agent
+// about loop mode behavior and completion signaling.
+const LoopPromptSuffix = `
+
+## Loop Mode Instructions
+
+You are running inside an automated loop managed by 'sbox loop'. Your ultimate goal is described above.
+
+**Your task on each iteration:**
+1. First, assess whether the goal described above has ALREADY been fully achieved.
+2. If the goal is NOT yet achieved, work toward completing it. Make meaningful progress.
+3. If the goal IS fully achieved (either it was already done or you just completed it), write a completion file at '.sbox/loop.completion' with a brief summary of what was accomplished.
+
+**Important rules:**
+- The file '.sbox/loop.completion' must be written ONLY when the goal is truly complete.
+- If you write the completion file, also include a brief summary of the completed work as the file content.
+- If the goal is not yet complete, do NOT write the completion file. Just work toward the goal and exit.
+- You will be re-launched automatically if the goal is not yet complete.
+`
+
+// runLoop runs the agent in a loop inside the container until the goal is
+// confirmed complete twice in a row, or max iterations is exceeded.
+func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, pluginDirs []string, workspaceDir string) error {
+	ui := DefaultUI
+	completionFile := filepath.Join(workspaceDir, ".sbox", LoopCompletionFile)
+	fullPrompt := config.Prompt + LoopPromptSuffix
+
+	completionCount := 0
+	iteration := 0
+
+	for {
+		iteration++
+
+		if config.MaxIterations > 0 && iteration > config.MaxIterations {
+			ui.MaxReached(config.MaxIterations)
+			return nil
+		}
+
+		// Remove completion file before each run
+		os.Remove(completionFile)
+
+		// Build iteration-specific prompt
+		iterationPrompt := fullPrompt
+		if iteration > 1 {
+			iterationPrompt = fmt.Sprintf("%s\n\n**Iteration %d**: This is loop iteration #%d. The goal has not yet been confirmed as complete. Continue working toward it.\n", fullPrompt, iteration, iteration)
+		}
+
+		ui.Iteration(iteration, completionCount)
+
+		// Build args for this iteration: flags first, then positional prompt last
+		args := append([]string{"-p", "--output-format=stream-json", "--verbose"}, baseArgs...)
+		args = append(args, iterationPrompt)
+
+		if err := runAgentWithStreamTransformer(agentType, args, pluginDirs); err != nil {
+			ui.AgentError(err)
+			// Continue the loop even on error
+		}
+
+		// Check for completion file
+		content, err := os.ReadFile(completionFile)
+		if err == nil && len(strings.TrimSpace(string(content))) > 0 {
+			completionCount++
+			ui.Completed(completionCount)
+
+			if completionCount >= 2 {
+				ui.Confirmed(iteration)
+				return nil
+			}
+
+			// Don't print "Re-running to confirm" if next iteration would exceed max
+			if config.MaxIterations <= 0 || iteration+1 <= config.MaxIterations {
+				ui.Reconfirming()
+			}
+		} else {
+			completionCount = 0
+			ui.Continuing()
+		}
+	}
+}
+
 // copyDir recursively copies a directory
 func copyDir(src, dst string) error {
 	srcInfo, err := os.Stat(src)
@@ -855,7 +1028,7 @@ func copyFile(src, dst string) error {
 // PrepareSboxDirectory populates the .sbox/ directory in the workspace with
 // plugins, agents, env vars, CLAUDE.md, and the entrypoint config. This is called by
 // `sbox run` before starting the sandbox.
-func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, projectEnvs, sboxFileEnvs []string, backend BackendType, agent AgentType) error {
+func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, projectEnvs, sboxFileEnvs []string, backend BackendType, agent AgentType, opts BackendOptions) error {
 	sboxDir := filepath.Join(workspaceDir, ".sbox")
 
 	zlog.Info("preparing .sbox directory",
@@ -876,7 +1049,10 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 	}
 
 	entrypointConfig := &EntrypointConfig{
-		Agent: string(agent),
+		Agent:         string(agent),
+		Prompt:        opts.Prompt,
+		LoopMode:      opts.LoopMode,
+		MaxIterations: opts.MaxIterations,
 	}
 
 	// Copy plugins and agents from agent-specific home directory
@@ -1224,22 +1400,16 @@ func resolveEnvs(globalEnvs, projectEnvs, sboxFileEnvs []string) []string {
 	return resolved
 }
 
-// SaveClaudeCache saves the .claude folder from inside a running sandbox to .sbox/claude-cache/.
-// This is called by `sbox stop` before stopping the sandbox to preserve credentials.
-// Uses rsync inside the container to sync to the workspace's .sbox/claude-cache/ directory.
-func SaveClaudeCache(workspaceDir string, backend Backend) error {
-	cachePath := filepath.Join(workspaceDir, ".sbox", ClaudeCacheDir)
-
-	zlog.Info("saving claude cache",
+// SaveAgentCache saves the agent's config state to .sbox/ for persistence across recreations.
+// For Claude, saves /home/agent/.claude to .sbox/claude-cache/.
+// For OpenCode, saves /home/agent/.config/opencode to .sbox/opencode-cache/ and
+// /home/agent/.local/share/opencode to .sbox/opencode-share-cache/.
+// Uses rsync inside the container since .sbox/ is mounted and visible on the host.
+func SaveAgentCache(workspaceDir string, agentType AgentType, backend Backend) error {
+	zlog.Info("saving agent cache",
 		zap.String("workspace", workspaceDir),
-		zap.String("cache_path", cachePath))
+		zap.String("agent", string(agentType)))
 
-	// Ensure cache directory exists (it's in the workspace, accessible from both host and container)
-	if err := os.MkdirAll(cachePath, 0755); err != nil {
-		return fmt.Errorf("failed to create cache directory: %w", err)
-	}
-
-	// Find the running container
 	info, err := backend.FindRunning(workspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to find running container: %w", err)
@@ -1248,12 +1418,27 @@ func SaveClaudeCache(workspaceDir string, backend Backend) error {
 		return fmt.Errorf("no running container found")
 	}
 
-	// Build the exec command based on backend type
 	var execPrefix []string
 	if backend.Name() == BackendSandbox {
 		execPrefix = []string{"docker", "sandbox", "exec", info.ID}
 	} else {
 		execPrefix = []string{"docker", "exec", info.ID}
+	}
+
+	switch agentType {
+	case AgentOpenCode:
+		return saveOpenCodeAgentCache(workspaceDir, execPrefix)
+	default:
+		return saveClaudeAgentCache(workspaceDir, execPrefix)
+	}
+}
+
+// saveClaudeAgentCache saves /home/agent/.claude to .sbox/claude-cache/ via rsync inside the container.
+func saveClaudeAgentCache(workspaceDir string, execPrefix []string) error {
+	cachePath := filepath.Join(workspaceDir, ".sbox", ClaudeCacheDir)
+
+	if err := os.MkdirAll(cachePath, 0755); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
 	claudeHome := "/home/agent/.claude"
@@ -1262,8 +1447,7 @@ func SaveClaudeCache(workspaceDir string, backend Backend) error {
 	// The .sbox directory is mounted in the workspace, so changes are visible on host
 	// --archive preserves permissions, timestamps, etc.
 	// --delete ensures cache is an exact mirror (removes stale files from cache)
-	rsyncArgs := append(execPrefix, "rsync", "-a", "--delete", claudeHome+"/", cachePath+"/")
-
+	rsyncArgs := append(slices.Clone(execPrefix), "rsync", "-a", "--delete", claudeHome+"/", cachePath+"/")
 	cmd := exec.Command(rsyncArgs[0], rsyncArgs[1:]...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1273,51 +1457,137 @@ func SaveClaudeCache(workspaceDir string, backend Backend) error {
 		return fmt.Errorf("rsync failed: %w", err)
 	}
 
-	zlog.Info("claude cache saved successfully",
-		zap.String("cache_path", cachePath))
+	zlog.Info("claude cache saved successfully", zap.String("cache_path", cachePath))
+	return nil
+}
+
+// saveOpenCodeAgentCache saves OpenCode config and share dirs to .sbox/ via rsync inside the container.
+// Saves /home/agent/.config/opencode → .sbox/opencode-cache/
+// Saves /home/agent/.local/share/opencode → .sbox/opencode-share-cache/ (non-fatal if missing)
+func saveOpenCodeAgentCache(workspaceDir string, execPrefix []string) error {
+	// Save .config/opencode → opencode-cache
+	configCachePath := filepath.Join(workspaceDir, ".sbox", OpenCodeCacheDir)
+	if err := os.MkdirAll(configCachePath, 0755); err != nil {
+		return fmt.Errorf("failed to create opencode cache directory: %w", err)
+	}
+
+	openCodeConfigHome := "/home/agent/.config/opencode"
+	configArgs := append(slices.Clone(execPrefix), "rsync", "-a", "--delete", openCodeConfigHome+"/", configCachePath+"/")
+	if output, err := exec.Command(configArgs[0], configArgs[1:]...).CombinedOutput(); err != nil {
+		zlog.Warn("rsync failed for opencode config cache",
+			zap.Error(err),
+			zap.String("output", string(output)))
+		return fmt.Errorf("rsync failed for opencode config: %w", err)
+	}
+	zlog.Info("opencode config cache saved successfully", zap.String("cache_path", configCachePath))
+
+	// Save .local/share/opencode → opencode-share-cache
+	// Non-fatal: the share dir may not exist if OpenCode hasn't written anything there yet.
+	shareCachePath := filepath.Join(workspaceDir, ".sbox", OpenCodeShareCacheDir)
+	if err := os.MkdirAll(shareCachePath, 0755); err != nil {
+		zlog.Warn("failed to create opencode share cache directory", zap.Error(err))
+		return nil
+	}
+
+	openCodeShareHome := "/home/agent/.local/share/opencode"
+	shareArgs := append(slices.Clone(execPrefix), "rsync", "-a", "--delete", openCodeShareHome+"/", shareCachePath+"/")
+	if output, err := exec.Command(shareArgs[0], shareArgs[1:]...).CombinedOutput(); err != nil {
+		zlog.Warn("rsync failed for opencode share cache (non-fatal)",
+			zap.Error(err),
+			zap.String("output", string(output)))
+	} else {
+		zlog.Info("opencode share cache saved successfully", zap.String("cache_path", shareCachePath))
+	}
 
 	return nil
 }
 
-// restoreClaudeCache restores the .claude folder from .sbox/claude-cache/ if present.
-// This allows credentials and settings to persist across sandbox recreations.
-// Uses rsync to efficiently sync the cache to the claude home directory.
-func restoreClaudeCache(workspaceDir, claudeHome string) error {
-	cachePath := filepath.Join(workspaceDir, ".sbox", ClaudeCacheDir)
+// restoreAgentCache restores the agent's config dir from .sbox/ cache if present.
+// For Claude, restores .sbox/claude-cache/ → agentHome.
+// For OpenCode, restores .sbox/opencode-cache/ → agentHome.
+// Uses rsync to efficiently sync the cache to the agent home directory.
+func restoreAgentCache(workspaceDir string, agentType AgentType, agentHome string) error {
+	var cacheDir string
+	switch agentType {
+	case AgentOpenCode:
+		cacheDir = OpenCodeCacheDir
+	default:
+		cacheDir = ClaudeCacheDir
+	}
+
+	cachePath := filepath.Join(workspaceDir, ".sbox", cacheDir)
 
 	// Check if cache exists and has content
 	entries, err := os.ReadDir(cachePath)
 	if os.IsNotExist(err) || len(entries) == 0 {
-		elog.Debug("no claude cache found or empty", "path", cachePath)
-		zlog.Debug("no claude cache found, skipping restore")
+		elog.Debug("no agent cache found or empty", "path", cachePath, "agent", string(agentType))
+		zlog.Debug("no agent cache found, skipping restore", zap.String("agent", string(agentType)))
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("failed to read cache directory: %w", err)
 	}
 
-	elog.Info("restoring claude cache", "src", cachePath, "dst", claudeHome)
-	zlog.Info("restoring claude cache from .sbox",
+	elog.Info("restoring agent cache", "src", cachePath, "dst", agentHome, "agent", string(agentType))
+	zlog.Info("restoring agent cache from .sbox",
 		zap.String("cache_path", cachePath),
-		zap.String("claude_home", claudeHome))
+		zap.String("agent_home", agentHome),
+		zap.String("agent", string(agentType)))
 
-	// Ensure claude home exists
-	if err := os.MkdirAll(claudeHome, 0755); err != nil {
-		return fmt.Errorf("failed to create claude home: %w", err)
+	if err := os.MkdirAll(agentHome, 0755); err != nil {
+		return fmt.Errorf("failed to create agent home: %w", err)
 	}
 
-	// Use rsync to restore cache to claude home
+	// Use rsync to restore cache to agent home
 	// --archive preserves permissions, timestamps, etc.
 	// We don't use --delete here to preserve any existing data
-	cmd := exec.Command("rsync", "-a", cachePath+"/", claudeHome+"/")
+	cmd := exec.Command("rsync", "-a", cachePath+"/", agentHome+"/")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		elog.Error("rsync restore failed", "error", err, "output", string(output))
 		return fmt.Errorf("rsync failed: %w", err)
 	}
 
-	elog.Info("claude cache restored successfully")
-	zlog.Info("claude cache restored successfully")
+	elog.Info("agent cache restored successfully", "agent", string(agentType))
+	zlog.Info("agent cache restored successfully", zap.String("agent", string(agentType)))
+	return nil
+}
+
+// restoreOpenCodeShareCache restores .local/share/opencode from .sbox/opencode-share-cache/ if present.
+// This is called after the individual OpenCode file setup so that cached state from a previous
+// session takes precedence over the initially seeded files (e.g. auth.json).
+func restoreOpenCodeShareCache(workspaceDir string) error {
+	cachePath := filepath.Join(workspaceDir, ".sbox", OpenCodeShareCacheDir)
+
+	entries, err := os.ReadDir(cachePath)
+	if os.IsNotExist(err) || len(entries) == 0 {
+		elog.Debug("no opencode share cache found or empty", "path", cachePath)
+		zlog.Debug("no opencode share cache found, skipping restore")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read opencode share cache directory: %w", err)
+	}
+
+	shareDir := filepath.Join("/home/agent", ".local", "share", "opencode")
+	elog.Info("restoring opencode share cache", "src", cachePath, "dst", shareDir)
+	zlog.Info("restoring opencode share cache from .sbox",
+		zap.String("cache_path", cachePath),
+		zap.String("share_dir", shareDir))
+
+	if err := os.MkdirAll(shareDir, 0755); err != nil {
+		return fmt.Errorf("failed to create opencode share directory: %w", err)
+	}
+
+	cmd := exec.Command("rsync", "-a", cachePath+"/", shareDir+"/")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		elog.Error("rsync opencode share restore failed", "error", err, "output", string(output))
+		return fmt.Errorf("rsync failed: %w", err)
+	}
+
+	elog.Info("opencode share cache restored successfully")
+	zlog.Info("opencode share cache restored successfully")
 	return nil
 }
 

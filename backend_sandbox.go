@@ -59,7 +59,7 @@ func (b *SandboxBackend) Run(opts BackendOptions) error {
 	if opts.SboxFile != nil && opts.SboxFile.Config != nil {
 		sboxFileEnvs = opts.SboxFile.Config.Envs
 	}
-	if err := PrepareSboxDirectory(opts.WorkspaceDir, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendSandbox, agentType); err != nil {
+	if err := PrepareSboxDirectory(opts.WorkspaceDir, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendSandbox, agentType, opts); err != nil {
 		return fmt.Errorf("failed to prepare .sbox directory: %w", err)
 	}
 
@@ -79,7 +79,7 @@ func (b *SandboxBackend) Run(opts BackendOptions) error {
 			return fmt.Errorf("failed to build custom template: %w", err)
 		}
 
-		fmt.Printf("Creating sandbox '%s'...\n", sandboxName)
+		DefaultUI.Status("Creating sandbox '%s'", sandboxName)
 		zlog.Info("sandbox does not exist, creating",
 			zap.String("name", sandboxName),
 			zap.String("workspace", opts.WorkspaceDir),
@@ -91,20 +91,18 @@ func (b *SandboxBackend) Run(opts BackendOptions) error {
 			if strings.Contains(err.Error(), "already exists") {
 				zlog.Info("sandbox already exists (detected from create error)",
 					zap.String("name", sandboxName))
-				fmt.Printf("Sandbox '%s' already exists\n", sandboxName)
 			} else {
 				return fmt.Errorf("failed to create sandbox: %w", err)
 			}
-		} else {
-			fmt.Printf("Sandbox '%s' created\n", sandboxName)
 		}
 	} else {
-		fmt.Printf("Using existing sandbox '%s'\n", sandboxName)
 		zlog.Info("sandbox already exists",
 			zap.String("name", sandboxName),
 			zap.String("sandbox_id", existingSandbox.ID),
 			zap.String("status", existingSandbox.Status))
 	}
+
+	DefaultUI.Status("Starting sandbox '%s'", sandboxName)
 
 	// Build run command: docker sandbox [--debug] run <name>
 	// Note: Extra args are not supported for existing sandboxes
@@ -118,8 +116,6 @@ func (b *SandboxBackend) Run(opts BackendOptions) error {
 		zap.String("cmd", "docker"),
 		zap.Strings("args", args),
 		zap.Bool("debug", opts.Debug))
-
-	fmt.Printf("Starting sandbox '%s'...\n", sandboxName)
 
 	// Execute docker sandbox run
 	cmd := exec.Command("docker", args...)
@@ -339,8 +335,8 @@ func (b *SandboxBackend) Cleanup(workspaceDir string) error {
 	return nil
 }
 
-// SaveCache saves the .claude state to .sbox/claude-cache/ for persistence
-func (b *SandboxBackend) SaveCache(workspaceDir string) error {
-	return SaveClaudeCache(workspaceDir, b)
+// SaveCache saves the agent state to .sbox/<agent>-cache/ for persistence
+func (b *SandboxBackend) SaveCache(workspaceDir string, agentType AgentType) error {
+	return SaveAgentCache(workspaceDir, agentType, b)
 }
 

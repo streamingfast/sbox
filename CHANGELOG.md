@@ -8,7 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- `sbox loop <prompt>` command: runs the agent in a loop until the goal described by the prompt is completed
+  - Same `--backend` and `--agent` support as `sbox run`
+  - Augments the prompt with loop instructions so the agent knows to assess and work toward the goal
+  - Agent writes `.sbox/loop.completion` when the goal is reached
+  - Loop stops after the agent confirms completion twice in a row, ensuring the goal is truly achieved
 - Transfer `tui.json` from `~/.config/opencode/tui.json` to `.sbox/` (host→sandbox) and from `.sbox/tui.json` to agent home (sandbox entrypoint) for OpenCode
+- OpenCode state persistence across `sbox stop` and `sbox run --recreate`
+  - `~/.config/opencode` synced to `.sbox/opencode-cache/` on stop/recreate; restored on next run
+  - `~/.local/share/opencode` synced to `.sbox/opencode-share-cache/` on stop/recreate; restored after initial file seeding so cached auth/session data takes precedence
 
 ## v1.4.0
 

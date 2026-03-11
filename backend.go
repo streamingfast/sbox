@@ -86,6 +86,15 @@ type BackendOptions struct {
 	// MountDockerSocket controls whether to mount the Docker socket
 	// Note: Only applicable for container backend; sandbox backend has automatic Docker access
 	MountDockerSocket bool
+
+	// Prompt is an optional prompt to pass to the agent via -p flag.
+	// When set, the agent runs non-interactively with this prompt.
+	// Used by `sbox loop` to pass the loop prompt to the agent.
+	Prompt string
+
+	// Loop mode fields — entrypoint handles iterations internally.
+	LoopMode      bool
+	MaxIterations int
 }
 
 // Backend defines the interface for container execution backends
@@ -118,10 +127,10 @@ type Backend interface {
 	// (e.g., .sbox directory, persistence volumes)
 	Cleanup(workspaceDir string) error
 
-	// SaveCache saves the .claude state for persistence across recreations.
-	// For sandbox backend, copies to .sbox/claude-cache/.
+	// SaveCache saves the agent's state for persistence across recreations.
+	// For sandbox backend, copies to .sbox/<agent>-cache/.
 	// For container backend, this is a no-op (uses named volumes).
-	SaveCache(workspaceDir string) error
+	SaveCache(workspaceDir string, agentType AgentType) error
 }
 
 // GetBackend returns the appropriate backend implementation based on the backend type.

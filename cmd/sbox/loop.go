@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -12,25 +14,31 @@ import (
 	"go.uber.org/zap"
 )
 
-var RunCommand = Command(runE,
-	"run",
-	"Launch Claude in Docker sandbox or container with configured mounts and profiles",
+var LoopCommand = Command(loopE,
+	"loop [prompt]",
+	"Run an agent in a loop until the goal described by the prompt is completed",
 	Description(`
-		Launches a Docker sandbox or container running Claude Code with:
-		- Shared ~/.claude/agents and ~/.claude/plugins directories
-		- Concatenated CLAUDE.md/AGENTS.md hierarchy from parent directories
-		- Persistent credentials across sessions
-		- Optional Docker socket access
-		- Custom profiles for additional tool installations (Go, Rust, etc.)
+		Runs the agent repeatedly with the given prompt until the goal is completed.
+		Works like 'sbox run' (same --backend and --agent support) but operates
+		in a non-interactive loop mode.
 
-		Backend types:
-		- sandbox (default): Uses Docker sandbox MicroVM for enhanced isolation
-		- container: Uses standard Docker container with named volume persistence
+		The prompt can be provided as:
+		- An argument: sbox loop "fix the tests"
+		- Via stdin:    echo "fix the tests" | sbox loop
+		- Interactively: sbox loop (prompts you to enter the goal)
 
-		Agent types:
-		- claude (default): Uses Claude Code AI agent
-		- opencode: Uses OpenCode AI agent
+		The agent receives the prompt augmented with loop instructions. It must
+		assess whether the goal is already reached. If not, it works toward the goal.
+		When the goal is completed, the agent writes a .sbox/loop.completion file.
+
+		After each agent run, the completion file is checked:
+		- If present with content: the agent believes the goal is completed
+		- If absent or empty: the agent is still working
+
+		The loop stops only after the agent confirms completion twice in a row,
+		ensuring the goal is truly achieved.
 	`),
+	MaximumNArgs(1),
 	Flags(func(flags *pflag.FlagSet) {
 		flags.Bool("docker-socket", false, "Mount Docker socket into sandbox/container")
 		flags.StringSlice("profile", nil, "Additional profiles to use for this session")
@@ -39,14 +47,18 @@ var RunCommand = Command(runE,
 		flags.Bool("debug", false, "Enable debug mode for docker commands")
 		flags.String("backend", "", "Backend type: 'sandbox' (default) or 'container'")
 		flags.String("agent", "", "Agent type: 'claude' (default) or 'opencode'")
+		flags.Int("max-iterations", 0, "Maximum number of loop iterations (0 = unlimited)")
 	}),
 )
 
-// runE launches the Docker sandbox with configured settings
-func runE(cmd *cobra.Command, args []string) error {
-	zlog.Debug("starting sbox run command")
+func loopE(cmd *cobra.Command, args []string) error {
+	userPrompt, err := resolveLoopPrompt(args)
+	if err != nil {
+		return err
+	}
 
-	// Get workspace directory (default to current directory)
+	zlog.Debug("starting sbox loop command", zap.String("prompt", userPrompt))
+
 	workspaceDir, err := cmd.Flags().GetString("workspace")
 	if err != nil {
 		return fmt.Errorf("failed to get workspace flag: %w", err)
@@ -58,19 +70,16 @@ func runE(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Load global configuration
 	config, err := sbox.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Load project configuration
 	projectConfig, _, err := sbox.GetProjectConfig(workspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to load project config: %w", err)
 	}
 
-	// Find and merge sbox.yaml file configuration
 	sboxFile, err := sbox.FindSboxFile(workspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to load sbox.yaml file: %w", err)
@@ -80,126 +89,82 @@ func runE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to merge sbox.yaml config: %w", err)
 	}
 
-	// Get flags
-	dockerSocket, err := cmd.Flags().GetBool("docker-socket")
-	if err != nil {
-		return fmt.Errorf("failed to get docker-socket flag: %w", err)
-	}
+	dockerSocket, _ := cmd.Flags().GetBool("docker-socket")
+	profiles, _ := cmd.Flags().GetStringSlice("profile")
+	recreate, _ := cmd.Flags().GetBool("recreate")
+	debug, _ := cmd.Flags().GetBool("debug")
+	backendFlag, _ := cmd.Flags().GetString("backend")
+	agentFlag, _ := cmd.Flags().GetString("agent")
+	maxIterations, _ := cmd.Flags().GetInt("max-iterations")
 
-	profiles, err := cmd.Flags().GetStringSlice("profile")
-	if err != nil {
-		return fmt.Errorf("failed to get profile flag: %w", err)
-	}
-
-	recreate, err := cmd.Flags().GetBool("recreate")
-	if err != nil {
-		return fmt.Errorf("failed to get recreate flag: %w", err)
-	}
-
-	debug, err := cmd.Flags().GetBool("debug")
-	if err != nil {
-		return fmt.Errorf("failed to get debug flag: %w", err)
-	}
-
-	backendFlag, err := cmd.Flags().GetString("backend")
-	if err != nil {
-		return fmt.Errorf("failed to get backend flag: %w", err)
-	}
-
-	// Validate backend flag if provided
 	if backendFlag != "" {
 		if err := sbox.ValidateBackend(backendFlag); err != nil {
 			return err
 		}
 	}
-
-	agentFlag, err := cmd.Flags().GetString("agent")
-	if err != nil {
-		return fmt.Errorf("failed to get agent flag: %w", err)
-	}
-
-	// Validate agent flag if provided
 	if agentFlag != "" {
 		if err := sbox.ValidateAgent(agentFlag); err != nil {
 			return err
 		}
 	}
 
-	// Resolve which backend to use (CLI > sbox.yaml > project > global > default)
 	backendType := sbox.ResolveBackendType(backendFlag, sboxFile, projectConfig, config)
-	zlog.Debug("resolved backend type", zap.String("backend", string(backendType)))
-
-	// Resolve which agent to use (CLI > sbox.yaml > project > global > default)
 	agentType := sbox.ResolveAgentType(agentFlag, sboxFile, projectConfig, config)
-	zlog.Debug("resolved agent type", zap.String("agent", string(agentType)))
 
-	// Persist the resolved backend and agent to project config so shell/stop/info can find it
 	projectConfig.Backend = string(backendType)
 	projectConfig.Agent = string(agentType)
 
-	// Get the backend implementation
 	backend, err := sbox.GetBackend(string(backendType), config)
 	if err != nil {
 		return fmt.Errorf("failed to get backend: %w", err)
 	}
 
-	// Generate sandbox name first (needed for lookup)
-	// Regenerate if empty OR if the agent has changed (detected by checking if the name contains the current agent)
+	// Generate sandbox name (same logic as run command)
 	needsRegeneration := projectConfig.SandboxName == ""
 	if !needsRegeneration && projectConfig.SandboxName != "" {
-		// Check if the sandbox name matches the current agent
 		expectedPrefix := "sbox-" + string(agentType) + "-"
 		if !strings.HasPrefix(projectConfig.SandboxName, expectedPrefix) {
-			zlog.Info("agent changed, regenerating sandbox name",
-				zap.String("old_name", projectConfig.SandboxName),
-				zap.String("agent", string(agentType)))
 			needsRegeneration = true
 		}
 	}
-
 	if needsRegeneration {
 		sandboxName, err := sbox.GenerateSandboxName(workspaceDir, agentType)
 		if err != nil {
 			return fmt.Errorf("failed to generate sandbox name: %w", err)
 		}
 		projectConfig.SandboxName = sandboxName
-		zlog.Debug("generated sandbox name", zap.String("name", sandboxName))
 	}
 
 	if recreate {
-		// Remove existing container/sandbox so a fresh one is created
-		// Use backend's Find() method to check for existing instance
 		existing, err := backend.Find(workspaceDir)
 		if err != nil {
 			zlog.Debug("failed to check for existing container/sandbox", zap.Error(err))
 		}
-
 		if existing != nil {
-			// Save agent cache before removing (for persistence across recreate)
 			if existing.Status == "running" {
 				if err := backend.SaveCache(workspaceDir, agentType); err != nil {
 					zlog.Warn("failed to save cache", zap.Error(err))
-					// Non-fatal - continue with recreate
 				}
 			}
-
-			ui := sbox.DefaultUI
-			ui.Status("Removing existing %s '%s' (%s)", backendType, existing.Name, existing.ID)
+			sbox.DefaultUI.Status("Removing existing %s '%s' (%s)", backendType, existing.Name, existing.ID)
 			if err := backend.Remove(existing.ID); err != nil {
 				return fmt.Errorf("failed to remove existing %s: %w", backendType, err)
 			}
-			ui.Status("Existing %s removed", backendType)
 		}
 	}
 
-	// Save project config to register this project (for sbox info)
-	// This must happen BEFORE running the sandbox so other terminals can see it
 	if err := sbox.SaveProjectConfig(workspaceDir, projectConfig); err != nil {
 		zlog.Warn("failed to save project config", zap.Error(err))
-		// Non-fatal: continue running sandbox even if we can't save config
 	}
 
-	// Build backend options
+	ui := sbox.DefaultUI
+	ui.Label("Backend", string(backend.Name()))
+	ui.Label("Goal", userPrompt)
+	if maxIterations > 0 {
+		ui.Label("Max iterations", fmt.Sprintf("%d", maxIterations))
+	}
+
+	// The entrypoint handles all loop iterations internally — sandbox stays warm.
 	opts := sbox.BackendOptions{
 		WorkspaceDir:      workspaceDir,
 		MountDockerSocket: dockerSocket,
@@ -209,11 +174,46 @@ func runE(cmd *cobra.Command, args []string) error {
 		Config:            config,
 		ProjectConfig:     projectConfig,
 		SboxFile:          sboxFile,
+		Prompt:            userPrompt,
+		LoopMode:          true,
+		MaxIterations:     maxIterations,
 	}
 
-	// Run using the selected backend
-	sbox.DefaultUI.Label("Backend", string(backend.Name()))
 	return backend.Run(opts)
 }
 
+// resolveLoopPrompt gets the prompt from args, stdin, or interactively.
+func resolveLoopPrompt(args []string) (string, error) {
+	// 1. From argument
+	if len(args) > 0 {
+		prompt := strings.TrimSpace(args[0])
+		if prompt != "" {
+			return prompt, nil
+		}
+	}
 
+	// 2. From stdin (piped)
+	stat, _ := os.Stdin.Stat()
+	if stat.Mode()&os.ModeCharDevice == 0 {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", fmt.Errorf("failed to read from stdin: %w", err)
+		}
+		prompt := strings.TrimSpace(string(data))
+		if prompt != "" {
+			return prompt, nil
+		}
+	}
+
+	// 3. Interactive prompt
+	fmt.Print("Enter your goal: ")
+	scanner := bufio.NewScanner(os.Stdin)
+	if scanner.Scan() {
+		prompt := strings.TrimSpace(scanner.Text())
+		if prompt != "" {
+			return prompt, nil
+		}
+	}
+
+	return "", fmt.Errorf("no prompt provided")
+}

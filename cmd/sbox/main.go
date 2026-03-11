@@ -34,6 +34,7 @@ func main() {
 		Execute(runE),
 
 		RunCommand,
+		LoopCommand,
 		ProfileGroup,
 		EnvGroup,
 		AgentGroup,

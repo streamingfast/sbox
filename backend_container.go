@@ -80,7 +80,7 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 	if opts.SboxFile != nil && opts.SboxFile.Config != nil {
 		sboxFileEnvs = opts.SboxFile.Config.Envs
 	}
-	if err := PrepareSboxDirectory(absPath, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendContainer, agentType); err != nil {
+	if err := PrepareSboxDirectory(absPath, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendContainer, agentType, opts); err != nil {
 		return fmt.Errorf("failed to prepare .sbox directory: %w", err)
 	}
 
@@ -93,11 +93,11 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 	if existing != nil {
 		// Container exists - check status and handle accordingly
 		if existing.Status == "running" {
-			fmt.Printf("Attaching to running container '%s'...\n", containerName)
+			DefaultUI.Status("Attaching to running container '%s'", containerName)
 			return b.attachContainer(containerName)
 		}
 		// Container exists but not running - start it
-		fmt.Printf("Starting existing container '%s'...\n", containerName)
+		DefaultUI.Status("Starting existing container '%s'", containerName)
 		return b.startContainer(containerName)
 	}
 
@@ -109,7 +109,7 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 		return fmt.Errorf("failed to build custom template: %w", err)
 	}
 
-	fmt.Printf("Creating container '%s'...\n", containerName)
+	DefaultUI.Status("Creating container '%s'", containerName)
 	zlog.Info("container does not exist, creating",
 		zap.String("name", containerName),
 		zap.String("workspace", absPath),
@@ -128,7 +128,7 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 		zap.String("cmd", "docker"),
 		zap.Strings("args", args))
 
-	fmt.Printf("Starting container '%s'...\n", containerName)
+	DefaultUI.Status("Starting container '%s'", containerName)
 
 	cmd := exec.Command("docker", args...)
 	cmd.Stdin = os.Stdin
@@ -629,9 +629,8 @@ func (b *ContainerBackend) Cleanup(workspaceDir string) error {
 }
 
 // SaveCache is a no-op for container backend - uses named volumes for persistence
-func (b *ContainerBackend) SaveCache(workspaceDir string) error {
-	// Container backend uses named volumes mounted at /home/agent/.claude
-	// which automatically persists across container restarts
+func (b *ContainerBackend) SaveCache(workspaceDir string, agentType AgentType) error {
+	// Container backend uses named volumes that automatically persist across container restarts
 	zlog.Debug("container backend uses volumes, no cache save needed")
 	return nil
 }

@@ -19,6 +19,7 @@ type WorkspaceContext struct {
 	SboxFile      *sbox.SboxFileLocation
 	BackendType   sbox.BackendType
 	Backend       sbox.Backend
+	AgentType     sbox.AgentType
 }
 
 // LoadWorkspaceContext loads all configuration and resolves the backend for a workspace.
@@ -50,6 +51,7 @@ func LoadWorkspaceContext(cmd *cobra.Command) (*WorkspaceContext, error) {
 	}
 
 	backendType := sbox.ResolveBackendType("", sboxFile, projectConfig, config)
+	agentType := sbox.ResolveAgentType("", sboxFile, projectConfig, config)
 
 	backend, err := sbox.GetBackend(string(backendType), config)
 	if err != nil {
@@ -63,6 +65,7 @@ func LoadWorkspaceContext(cmd *cobra.Command) (*WorkspaceContext, error) {
 		SboxFile:      sboxFile,
 		BackendType:   backendType,
 		Backend:       backend,
+		AgentType:     agentType,
 	}, nil
 }
 

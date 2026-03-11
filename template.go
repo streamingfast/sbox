@@ -376,7 +376,7 @@ func (tb *TemplateBuilder) Build(forceRebuild bool) (string, error) {
 	if forceRebuild {
 		baseTemplate := GetBaseTemplateForAgent(tb.Agent)
 		agentName := tb.Agent.Capitalize()
-		fmt.Printf("Pulling latest base image to get newest %s version...\n", agentName)
+		DefaultUI.Status("Pulling latest base image to get newest %s version", agentName)
 		pullCmd := exec.Command("docker", "pull", baseTemplate)
 		pullCmd.Stdout = os.Stdout
 		pullCmd.Stderr = os.Stderr
@@ -386,7 +386,7 @@ func (tb *TemplateBuilder) Build(forceRebuild bool) (string, error) {
 				zap.Error(err))
 			// Non-fatal: continue with cached base image
 		} else {
-			fmt.Printf("Base image updated successfully\n")
+			DefaultUI.Status("Base image updated successfully")
 		}
 	}
 
@@ -438,7 +438,7 @@ func (tb *TemplateBuilder) Build(forceRebuild bool) (string, error) {
 
 // buildLocalBinary cross-compiles sbox for the target architecture and places it in the build context
 func (tb *TemplateBuilder) buildLocalBinary(buildDir string, targetArch *TargetArch) error {
-	fmt.Printf("Building sbox binary for %s (local build mode)...\n", targetArch.DockerPlatform)
+	DefaultUI.Status("Building sbox binary for %s (local build mode)", targetArch.DockerPlatform)
 
 	binaryPath := filepath.Join(buildDir, "sbox")
 

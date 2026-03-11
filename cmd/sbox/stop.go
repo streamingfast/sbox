@@ -65,10 +65,10 @@ func stopE(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Save .claude cache before stopping (for persistence across recreations)
+	// Save agent cache before stopping (for persistence across recreations)
 	// Skip if --rm is set (resources are being removed, no point caching)
 	if !removeSandbox {
-		if err := ctx.Backend.SaveCache(ctx.WorkspaceDir); err != nil {
+		if err := ctx.Backend.SaveCache(ctx.WorkspaceDir, ctx.AgentType); err != nil {
 			zlog.Warn("failed to save cache", zap.Error(err))
 			// Non-fatal - continue with stop
 		}

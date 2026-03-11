@@ -144,7 +144,7 @@ func RunSandbox(opts SandboxOptions) error {
 	if opts.SboxFile != nil && opts.SboxFile.Config != nil {
 		sboxFileEnvs = opts.SboxFile.Config.Envs
 	}
-	if err := PrepareSboxDirectory(opts.WorkspaceDir, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendSandbox, agentType); err != nil {
+	if err := PrepareSboxDirectory(opts.WorkspaceDir, opts.Config, opts.Config.Envs, opts.ProjectConfig.Envs, sboxFileEnvs, BackendSandbox, agentType, BackendOptions{}); err != nil {
 		return fmt.Errorf("failed to prepare .sbox directory: %w", err)
 	}
 
@@ -164,7 +164,7 @@ func RunSandbox(opts SandboxOptions) error {
 			return fmt.Errorf("failed to build custom template: %w", err)
 		}
 
-		fmt.Printf("Creating sandbox '%s'...\n", sandboxName)
+		DefaultUI.Status("Creating sandbox '%s'", sandboxName)
 		zlog.Info("sandbox does not exist, creating",
 			zap.String("name", sandboxName),
 			zap.String("workspace", opts.WorkspaceDir),
@@ -176,20 +176,18 @@ func RunSandbox(opts SandboxOptions) error {
 			if strings.Contains(err.Error(), "already exists") {
 				zlog.Info("sandbox already exists (detected from create error)",
 					zap.String("name", sandboxName))
-				fmt.Printf("Sandbox '%s' already exists\n", sandboxName)
 			} else {
 				return fmt.Errorf("failed to create sandbox: %w", err)
 			}
-		} else {
-			fmt.Printf("Sandbox '%s' created\n", sandboxName)
 		}
 	} else {
-		fmt.Printf("Using existing sandbox '%s'\n", sandboxName)
 		zlog.Info("sandbox already exists",
 			zap.String("name", sandboxName),
 			zap.String("sandbox_id", existingSandbox.ID),
 			zap.String("status", existingSandbox.Status))
 	}
+
+	DefaultUI.Status("Starting sandbox '%s'", sandboxName)
 
 	// Build run command: docker sandbox [--debug] run <name>
 	// Note: Extra args are not supported for existing sandboxes
@@ -203,8 +201,6 @@ func RunSandbox(opts SandboxOptions) error {
 		zap.String("cmd", "docker"),
 		zap.Strings("args", args),
 		zap.Bool("debug", opts.Debug))
-
-	fmt.Printf("Starting sandbox '%s'...\n", sandboxName)
 
 	// Execute docker sandbox run
 	cmd := exec.Command("docker", args...)
