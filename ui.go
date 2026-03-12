@@ -80,8 +80,8 @@ func (u *UI) Iteration(n, completions int) {
 }
 
 // Completed prints the completion confirmation message.
-func (u *UI) Completed(count int) {
-	fmt.Fprintln(u.w, StyleSuccess.Render(fmt.Sprintf("✓ Goal completed (%d/2)", count)))
+func (u *UI) Completed(count, required int) {
+	fmt.Fprintln(u.w, StyleSuccess.Render(fmt.Sprintf("✓ Goal completed (%d/%d)", count, required)))
 }
 
 // Confirmed prints the final success message.

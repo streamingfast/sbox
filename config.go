@@ -41,6 +41,10 @@ type Config struct {
 	// DefaultAgent is the default agent type: "claude" (default) or "opencode"
 	// Can be overridden per-project via sbox.yaml or project config
 	DefaultAgent string `yaml:"default_agent"`
+
+	// LoopConfirmations is the number of consecutive goal completions required
+	// before `sbox loop` considers the goal truly achieved. Default: 2.
+	LoopConfirmations int `yaml:"loop_confirmations"`
 }
 
 // ProjectConfig holds per-project configuration settings
@@ -99,6 +103,10 @@ type SboxFileConfig struct {
 
 	// Agent specifies the AI agent to run: "claude" (default) or "opencode"
 	Agent string `yaml:"agent"`
+
+	// LoopConfirmations overrides the number of consecutive goal completions
+	// required before `sbox loop` considers the goal truly achieved.
+	LoopConfirmations int `yaml:"loop_confirmations"`
 }
 
 // SboxFileLocation contains info about a loaded sbox.yaml file
@@ -807,4 +815,27 @@ func expandPath(path string) string {
 		return path
 	}
 	return absPath
+}
+
+// ResolveLoopConfirmations determines the number of consecutive confirmations
+// required for `sbox loop` to consider a goal complete.
+// Priority order (highest to lowest):
+// 1. CLI flag (cliValue, 0 means not set)
+// 2. sbox.yaml file (sboxFile.Config.LoopConfirmations)
+// 3. Global config (config.LoopConfirmations)
+// 4. Hardcoded default (2)
+func ResolveLoopConfirmations(cliValue int, sboxFile *SboxFileLocation, config *Config) int {
+	if cliValue > 0 {
+		return cliValue
+	}
+
+	if sboxFile != nil && sboxFile.Config != nil && sboxFile.Config.LoopConfirmations > 0 {
+		return sboxFile.Config.LoopConfirmations
+	}
+
+	if config != nil && config.LoopConfirmations > 0 {
+		return config.LoopConfirmations
+	}
+
+	return 2
 }

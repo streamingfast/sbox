@@ -100,9 +100,21 @@ type EntrypointConfig struct {
 	Prompt string `yaml:"prompt,omitempty"`
 
 	// Loop mode fields — when LoopMode is true, the entrypoint runs the agent
-	// in a loop until the goal is confirmed complete (twice in a row).
-	LoopMode      bool `yaml:"loop_mode,omitempty"`
-	MaxIterations int  `yaml:"max_iterations,omitempty"`
+	// in a loop until the goal is confirmed complete.
+	LoopMode          bool `yaml:"loop_mode,omitempty"`
+	MaxIterations     int  `yaml:"max_iterations,omitempty"`
+	LoopConfirmations int  `yaml:"loop_confirmations,omitempty"`
+
+	// Developer contains developer-oriented settings for debugging and development
+	Developer *DeveloperSettings `yaml:"developer,omitempty"`
+}
+
+// DeveloperSettings contains developer-oriented settings for debugging and development.
+type DeveloperSettings struct {
+	// StartupDelay delays agent startup inside the sandbox.
+	// If not set (nil), no delay. If 0, infinite delay (wait forever).
+	// Otherwise, waits for the specified duration before starting the agent.
+	StartupDelay *Duration `yaml:"startup_delay,omitempty"`
 }
 
 // EntrypointPlugin describes a plugin to be installed in the sandbox
@@ -571,6 +583,21 @@ func RunEntrypoint(args []string) error {
 
 	elog.Info("=== setup complete, exec agent ===", "agent", agentType, "pluginDirs", pluginDirs)
 
+	// Apply startup delay if configured (developer setting)
+	if config.Developer != nil && config.Developer.StartupDelay != nil {
+		delay := config.Developer.StartupDelay.Duration
+		if delay == 0 {
+			elog.Info("startup delay set to 0, waiting forever (use Ctrl+C to cancel)")
+			fmt.Println("[sbox] startup-delay is 0, waiting forever without starting agent (Ctrl+C to cancel)")
+			select {} // Block forever
+		} else {
+			elog.Info("applying startup delay", "duration", delay)
+			fmt.Printf("[sbox] startup-delay: waiting %s before starting agent...\n", delay)
+			time.Sleep(delay)
+			elog.Info("startup delay complete, proceeding")
+		}
+	}
+
 	// Loop mode: run the agent repeatedly until the goal is confirmed complete.
 	// The entrypoint handles all iterations internally so the sandbox stays warm.
 	if config.LoopMode && config.Prompt != "" {
@@ -581,9 +608,19 @@ func RunEntrypoint(args []string) error {
 	// Single prompt mode (non-loop): run agent once with stream transformer.
 	if config.Prompt != "" {
 		elog.Info("adding prompt from entrypoint config", "prompt_length", len(config.Prompt))
+
+		// Write prompt to file to avoid shell argument length limits
+		promptFile := filepath.Join(workspaceDir, ".sbox", "run.prompt")
+		if err := os.WriteFile(promptFile, []byte(config.Prompt), 0644); err != nil {
+			return fmt.Errorf("failed to write run prompt file: %w", err)
+		}
+
+		relPromptFile := filepath.Join(".sbox", "run.prompt")
+		shortPrompt := fmt.Sprintf("Read file %s, it contains your prompt.", relPromptFile)
+
 		// Flags first, then positional prompt last
 		args = append([]string{"-p", "--output-format=stream-json", "--verbose"}, args...)
-		args = append(args, config.Prompt)
+		args = append(args, shortPrompt)
 		return runAgentWithStreamTransformer(AgentType(agentType), args, pluginDirs)
 	}
 
@@ -909,11 +946,16 @@ You are running inside an automated loop managed by 'sbox loop'. Your ultimate g
 `
 
 // runLoop runs the agent in a loop inside the container until the goal is
-// confirmed complete twice in a row, or max iterations is exceeded.
+// confirmed complete the required number of consecutive times, or max iterations is exceeded.
 func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, pluginDirs []string, workspaceDir string) error {
 	ui := DefaultUI
 	completionFile := filepath.Join(workspaceDir, ".sbox", LoopCompletionFile)
 	fullPrompt := config.Prompt + LoopPromptSuffix
+
+	requiredConfirmations := config.LoopConfirmations
+	if requiredConfirmations <= 0 {
+		requiredConfirmations = 2
+	}
 
 	completionCount := 0
 	iteration := 0
@@ -935,24 +977,34 @@ func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, p
 			iterationPrompt = fmt.Sprintf("%s\n\n**Iteration %d**: This is loop iteration #%d. The goal has not yet been confirmed as complete. Continue working toward it.\n", fullPrompt, iteration, iteration)
 		}
 
+		// Write prompt to file to avoid shell argument length limits
+		promptFile := filepath.Join(workspaceDir, ".sbox", "loop.prompt")
+		if err := os.WriteFile(promptFile, []byte(iterationPrompt), 0644); err != nil {
+			return fmt.Errorf("failed to write loop prompt file: %w", err)
+		}
+
 		ui.Iteration(iteration, completionCount)
+
+		// Reference the prompt file instead of passing the full prompt as an argument
+		relPromptFile := filepath.Join(".sbox", "loop.prompt")
+		shortPrompt := fmt.Sprintf("Read file %s, it contains your prompt.", relPromptFile)
 
 		// Build args for this iteration: flags first, then positional prompt last
 		args := append([]string{"-p", "--output-format=stream-json", "--verbose"}, baseArgs...)
-		args = append(args, iterationPrompt)
+		args = append(args, shortPrompt)
 
 		if err := runAgentWithStreamTransformer(agentType, args, pluginDirs); err != nil {
 			ui.AgentError(err)
-			// Continue the loop even on error
+			return fmt.Errorf("loop stopped: agent exited with error: %w", err)
 		}
 
 		// Check for completion file
 		content, err := os.ReadFile(completionFile)
 		if err == nil && len(strings.TrimSpace(string(content))) > 0 {
 			completionCount++
-			ui.Completed(completionCount)
+			ui.Completed(completionCount, requiredConfirmations)
 
-			if completionCount >= 2 {
+			if completionCount >= requiredConfirmations {
 				ui.Confirmed(iteration)
 				return nil
 			}
@@ -1049,10 +1101,18 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 	}
 
 	entrypointConfig := &EntrypointConfig{
-		Agent:         string(agent),
-		Prompt:        opts.Prompt,
-		LoopMode:      opts.LoopMode,
-		MaxIterations: opts.MaxIterations,
+		Agent:             string(agent),
+		Prompt:            opts.Prompt,
+		LoopMode:          opts.LoopMode,
+		MaxIterations:     opts.MaxIterations,
+		LoopConfirmations: opts.LoopConfirmations,
+	}
+
+	// Copy developer settings from backend options
+	if opts.StartupDelay != nil {
+		entrypointConfig.Developer = &DeveloperSettings{
+			StartupDelay: &Duration{Duration: *opts.StartupDelay},
+		}
 	}
 
 	// Copy plugins and agents from agent-specific home directory

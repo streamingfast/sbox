@@ -2,6 +2,7 @@ package sbox
 
 import (
 	"fmt"
+	"time"
 )
 
 // BackendType represents the container backend type
@@ -93,8 +94,13 @@ type BackendOptions struct {
 	Prompt string
 
 	// Loop mode fields — entrypoint handles iterations internally.
-	LoopMode      bool
-	MaxIterations int
+	LoopMode          bool
+	MaxIterations     int
+	LoopConfirmations int
+
+	// StartupDelay delays agent startup inside the sandbox.
+	// nil means no delay, 0 means infinite delay, otherwise waits for the duration.
+	StartupDelay *time.Duration
 }
 
 // Backend defines the interface for container execution backends

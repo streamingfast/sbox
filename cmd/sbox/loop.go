@@ -48,6 +48,7 @@ var LoopCommand = Command(loopE,
 		flags.String("backend", "", "Backend type: 'sandbox' (default) or 'container'")
 		flags.String("agent", "", "Agent type: 'claude' (default) or 'opencode'")
 		flags.Int("max-iterations", 0, "Maximum number of loop iterations (0 = unlimited)")
+		flags.Int("confirmations", 0, "Number of consecutive goal completions required (default: 2, override via sbox.yaml or global config)")
 	}),
 )
 
@@ -96,6 +97,7 @@ func loopE(cmd *cobra.Command, args []string) error {
 	backendFlag, _ := cmd.Flags().GetString("backend")
 	agentFlag, _ := cmd.Flags().GetString("agent")
 	maxIterations, _ := cmd.Flags().GetInt("max-iterations")
+	confirmationsFlag, _ := cmd.Flags().GetInt("confirmations")
 
 	if backendFlag != "" {
 		if err := sbox.ValidateBackend(backendFlag); err != nil {
@@ -157,11 +159,17 @@ func loopE(cmd *cobra.Command, args []string) error {
 		zlog.Warn("failed to save project config", zap.Error(err))
 	}
 
+	// Resolve loop confirmations: CLI flag > sbox.yaml > global config > default (2)
+	loopConfirmations := sbox.ResolveLoopConfirmations(confirmationsFlag, sboxFile, config)
+
 	ui := sbox.DefaultUI
 	ui.Label("Backend", string(backend.Name()))
 	ui.Label("Goal", userPrompt)
 	if maxIterations > 0 {
 		ui.Label("Max iterations", fmt.Sprintf("%d", maxIterations))
+	}
+	if loopConfirmations != 2 {
+		ui.Label("Confirmations", fmt.Sprintf("%d", loopConfirmations))
 	}
 
 	// The entrypoint handles all loop iterations internally — sandbox stays warm.
@@ -177,9 +185,20 @@ func loopE(cmd *cobra.Command, args []string) error {
 		Prompt:            userPrompt,
 		LoopMode:          true,
 		MaxIterations:     maxIterations,
+		LoopConfirmations: loopConfirmations,
 	}
 
-	return backend.Run(opts)
+	runErr := backend.Run(opts)
+
+	// In loop mode the sandbox should not keep running after the loop ends
+	// (whether by completion, error, or Ctrl+C). Stop it so it doesn't
+	// continue consuming resources in the background.
+	ui.Status("Stopping sandbox after loop exit...")
+	if _, err := backend.Stop(workspaceDir, false); err != nil {
+		zlog.Warn("failed to stop sandbox after loop", zap.Error(err))
+	}
+
+	return runErr
 }
 
 // resolveLoopPrompt gets the prompt from args, stdin, or interactively.

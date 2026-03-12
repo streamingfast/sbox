@@ -4,15 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## Unreleased
+## v1.5.0
 
 ### Added
 
+- `sbox run --startup-delay` flag to delay agent startup inside the sandbox. If set to `0`, waits forever without starting the agent (useful for attaching a shell and debugging). Otherwise accepts a Go duration (e.g. `30s`, `5m`).
+- `sbox loop --confirmations` flag to configure the number of consecutive goal completions required (default: 2). Also configurable via `loop_confirmations` in global config (`~/.config/sbox/config.yaml`) or `sbox.yaml`.
 - `sbox loop <prompt>` command: runs the agent in a loop until the goal described by the prompt is completed
   - Same `--backend` and `--agent` support as `sbox run`
   - Augments the prompt with loop instructions so the agent knows to assess and work toward the goal
   - Agent writes `.sbox/loop.completion` when the goal is reached
-  - Loop stops after the agent confirms completion twice in a row, ensuring the goal is truly achieved
+  - Loop stops after the agent confirms completion the required number of consecutive times
+
+### Fixed
+
+- `sbox loop` now stops immediately when the agent exits with an error or is killed, instead of continuing to loop
+- `sbox loop` now stops the sandbox when the loop exits (completion, error, or Ctrl+C), preventing the container from running in the background
+- Fix container backend not producing output in loop/prompt mode due to TTY allocation (`-it`) mangling stream-json output
 - Transfer `tui.json` from `~/.config/opencode/tui.json` to `.sbox/` (host→sandbox) and from `.sbox/tui.json` to agent home (sandbox entrypoint) for OpenCode
 - OpenCode state persistence across `sbox stop` and `sbox run --recreate`
   - `~/.config/opencode` synced to `.sbox/opencode-cache/` on stop/recreate; restored on next run

@@ -94,11 +94,11 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 		// Container exists - check status and handle accordingly
 		if existing.Status == "running" {
 			DefaultUI.Status("Attaching to running container '%s'", containerName)
-			return b.attachContainer(containerName)
+			return b.attachContainer(containerName, opts)
 		}
 		// Container exists but not running - start it
 		DefaultUI.Status("Starting existing container '%s'", containerName)
-		return b.startContainer(containerName)
+		return b.startContainer(containerName, opts)
 	}
 
 	// Container doesn't exist - create and run it
@@ -145,7 +145,14 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 
 // buildRunArgs constructs the docker run command arguments
 func (b *ContainerBackend) buildRunArgs(containerName, workspaceDir, image, volumeName string, agentType AgentType, opts BackendOptions) []string {
-	args := []string{"run", "-it", "--name", containerName}
+	var args []string
+	if opts.Prompt != "" {
+		// Non-interactive mode (prompt/loop): no TTY allocation.
+		// A TTY would mangle the stream-json output that the entrypoint parses.
+		args = []string{"run", "--name", containerName}
+	} else {
+		args = []string{"run", "-it", "--name", containerName}
+	}
 
 	// Mount workspace directory
 	args = append(args, "-v", fmt.Sprintf("%s:%s", workspaceDir, workspaceDir))
@@ -251,8 +258,16 @@ func (b *ContainerBackend) ensureVolume(volumeName string) error {
 }
 
 // attachContainer attaches to a running container
-func (b *ContainerBackend) attachContainer(containerName string) error {
-	cmd := exec.Command("docker", "attach", containerName)
+func (b *ContainerBackend) attachContainer(containerName string, opts BackendOptions) error {
+	args := []string{"attach"}
+	if opts.Prompt != "" {
+		// Non-interactive mode: don't attach stdin (no --sig-proxy=false needed,
+		// we still want signals forwarded)
+		args = append(args, "--no-stdin")
+	}
+	args = append(args, containerName)
+
+	cmd := exec.Command("docker", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -264,8 +279,18 @@ func (b *ContainerBackend) attachContainer(containerName string) error {
 }
 
 // startContainer starts a stopped container
-func (b *ContainerBackend) startContainer(containerName string) error {
-	cmd := exec.Command("docker", "start", "-ai", containerName)
+func (b *ContainerBackend) startContainer(containerName string, opts BackendOptions) error {
+	args := []string{"start"}
+	if opts.Prompt != "" {
+		// Non-interactive mode: attach stdout/stderr but no interactive TTY
+		args = append(args, "-a")
+	} else {
+		// Interactive mode: attach + interactive
+		args = append(args, "-ai")
+	}
+	args = append(args, containerName)
+
+	cmd := exec.Command("docker", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

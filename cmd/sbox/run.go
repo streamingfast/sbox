@@ -39,6 +39,7 @@ var RunCommand = Command(runE,
 		flags.Bool("debug", false, "Enable debug mode for docker commands")
 		flags.String("backend", "", "Backend type: 'sandbox' (default) or 'container'")
 		flags.String("agent", "", "Agent type: 'claude' (default) or 'opencode'")
+		flags.Duration("startup-delay", -1, "Delay agent startup inside the sandbox (0 = wait forever, e.g. 30s, 5m)")
 	}),
 )
 
@@ -125,6 +126,11 @@ func runE(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	startupDelay, err := cmd.Flags().GetDuration("startup-delay")
+	if err != nil {
+		return fmt.Errorf("failed to get startup-delay flag: %w", err)
+	}
+
 	// Resolve which backend to use (CLI > sbox.yaml > project > global > default)
 	backendType := sbox.ResolveBackendType(backendFlag, sboxFile, projectConfig, config)
 	zlog.Debug("resolved backend type", zap.String("backend", string(backendType)))
@@ -209,6 +215,11 @@ func runE(cmd *cobra.Command, args []string) error {
 		Config:            config,
 		ProjectConfig:     projectConfig,
 		SboxFile:          sboxFile,
+	}
+
+	// -1 is the default (unset), any other value means the flag was provided
+	if startupDelay >= 0 {
+		opts.StartupDelay = &startupDelay
 	}
 
 	// Run using the selected backend
