@@ -55,6 +55,15 @@ type AgentSpec interface {
 
 	// ExecArgs returns the command-line arguments for the agent
 	ExecArgs(pluginDirs []string) []string
+
+	// UpdateArgs returns the command-line arguments to update the agent.
+	// Returns nil if the agent does not support managed updates.
+	UpdateArgs() []string
+
+	// DisableAutoUpdateEnv returns environment variables to set in order to
+	// prevent the agent from auto-updating itself (we manage updates via sbox).
+	// Returns nil if the agent has no built-in auto-updater.
+	DisableAutoUpdateEnv() map[string]string
 }
 
 // GetAgentSpec returns the agent specification for the given agent type
@@ -145,6 +154,14 @@ func (a *ClaudeAgent) ExecArgs(pluginDirs []string) []string {
 	return argv
 }
 
+func (a *ClaudeAgent) UpdateArgs() []string {
+	return []string{"update"}
+}
+
+func (a *ClaudeAgent) DisableAutoUpdateEnv() map[string]string {
+	return map[string]string{"DISABLE_AUTOUPDATER": "1"}
+}
+
 // OpenCodeAgent implements AgentSpec for OpenCode
 type OpenCodeAgent struct{}
 
@@ -207,6 +224,16 @@ func (a *OpenCodeAgent) ExecArgs(pluginDirs []string) []string {
 	argv := []string{"opencode"}
 	// TODO: OpenCode plugin support - needs investigation of how OpenCode handles plugins
 	return argv
+}
+
+func (a *OpenCodeAgent) UpdateArgs() []string {
+	// TODO: OpenCode update mechanism not yet supported
+	return nil
+}
+
+func (a *OpenCodeAgent) DisableAutoUpdateEnv() map[string]string {
+	// TODO: OpenCode auto-update disable mechanism not yet known
+	return nil
 }
 
 // ResolveAgentType determines the effective agent type from configuration sources.

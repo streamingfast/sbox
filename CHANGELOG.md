@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## v1.5.1
+
+### Added
+
+- Background agent auto-updater: sbox entrypoint now wraps the agent as a child process instead of exec'ing, runs a background update check every 15 minutes, and updates the agent binary if the last update was more than 24 hours ago. After each update, the shim wrapper is automatically repaired so the sbox entrypoint remains the entry point.
+- Disable agent's built-in auto-updater (`DISABLE_AUTOUPDATER=1`) to prevent it from overwriting the sbox shim wrapper. Updates are now managed by sbox itself.
+
 ## v1.5.0
 
 ### Added

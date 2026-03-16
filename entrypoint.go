@@ -8,7 +8,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"context"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -448,6 +450,17 @@ func RunEntrypoint(args []string) error {
 		zap.Int("agents", len(config.Agents)),
 		zap.String("agent", agentType))
 
+	// Disable the agent's built-in auto-updater so it doesn't overwrite our shim
+	// wrapper. We handle updates ourselves via a background updater that correctly
+	// re-shims after each update.
+	spec := GetAgentSpec(AgentType(agentType))
+	if envVars := spec.DisableAutoUpdateEnv(); envVars != nil {
+		for k, v := range envVars {
+			os.Setenv(k, v)
+			elog.Info("set auto-update disable env var", "key", k, "value", v)
+		}
+	}
+
 	// Log plugin details
 	for i, p := range config.Plugins {
 		elog.Debug("plugin", "index", i, "name", p.Name, "path", p.Path)
@@ -632,8 +645,8 @@ func RunEntrypoint(args []string) error {
 		elog.Info("adding workspace path as first arg for OpenCode", "workspace", workspaceDir)
 	}
 
-	// Exec the specified agent (replaces current process)
-	return execAgent(agentTypeEnum, args, pluginDirs)
+	// Run the agent as a child process with signal forwarding and background updates
+	return runAgent(agentTypeEnum, args, pluginDirs, workspaceDir)
 }
 
 // setupRules copies .sbox/CLAUDE.md to agent home/CLAUDE.md or AGENTS.md
@@ -874,6 +887,227 @@ func execAgent(agentType AgentType, args []string, pluginDirs []string) error {
 
 	// Exec replaces current process (log file will be closed automatically)
 	return syscall.Exec(binaryPath, argv, os.Environ())
+}
+
+const (
+	// agentUpdateCheckInterval is how often the background updater checks
+	// whether an update is needed.
+	agentUpdateCheckInterval = 15 * time.Minute
+
+	// agentUpdateThreshold is the minimum time between actual update attempts.
+	agentUpdateThreshold = 24 * time.Hour
+
+	// lastAgentUpdateFile is the filename in .sbox/ that stores the last update timestamp.
+	lastAgentUpdateFile = "last-agent-update"
+)
+
+// runAgent spawns the agent as a child process with signal forwarding and a
+// background updater that periodically updates the agent binary and re-shims.
+func runAgent(agentType AgentType, args []string, pluginDirs []string, workspaceDir string) error {
+	spec := GetAgentSpec(agentType)
+
+	binaryPath, err := spec.FindBinary()
+	if err != nil {
+		if elog != nil {
+			elog.Error("failed to find agent binary", "agent", agentType, "error", err)
+		}
+		fmt.Fprintf(os.Stderr, "\nERROR: %s binary not found in the sandbox.\n", spec.BinaryName())
+		return fmt.Errorf("failed to find %s: %w", spec.BinaryName(), err)
+	}
+
+	argv := spec.ExecArgs(pluginDirs)
+	argv = append(argv, args...)
+
+	if elog != nil {
+		elog.Info("running agent as child process", "agent", agentType, "path", binaryPath, "argv", argv)
+	}
+
+	cmd := exec.Command(binaryPath, argv[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start agent: %w", err)
+	}
+
+	// Forward signals to the child process
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGHUP)
+	go func() {
+		for sig := range sigCh {
+			_ = cmd.Process.Signal(sig)
+		}
+	}()
+
+	// Start background updater
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if spec.UpdateArgs() != nil {
+		go runAgentUpdater(ctx, spec, workspaceDir)
+	}
+
+	err = cmd.Wait()
+	signal.Stop(sigCh)
+	close(sigCh)
+
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		return err
+	}
+	return nil
+}
+
+// runAgentUpdater periodically checks if the agent needs updating and performs
+// the update + shim restoration if the last update was more than agentUpdateThreshold ago.
+func runAgentUpdater(ctx context.Context, spec AgentSpec, workspaceDir string) {
+	ticker := time.NewTicker(agentUpdateCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := maybeUpdateAgent(spec, workspaceDir); err != nil {
+				if elog != nil {
+					elog.Error("agent auto-update failed", "agent", spec.BinaryName(), "error", err)
+				}
+			}
+		}
+	}
+}
+
+// maybeUpdateAgent checks the last update timestamp and performs an update if stale.
+func maybeUpdateAgent(spec AgentSpec, workspaceDir string) error {
+	sboxDir := filepath.Join(workspaceDir, ".sbox")
+	updateFile := filepath.Join(sboxDir, lastAgentUpdateFile)
+
+	if info, err := os.Stat(updateFile); err == nil {
+		age := time.Since(info.ModTime())
+		if age < agentUpdateThreshold {
+			if elog != nil {
+				elog.Info("agent auto-update skipped, last update is recent enough",
+					"agent", spec.BinaryName(),
+					"last_update_age", age.Round(time.Second).String(),
+					"threshold", agentUpdateThreshold.String())
+			}
+			return nil
+		}
+	}
+
+	if elog != nil {
+		elog.Info("agent auto-update starting", "agent", spec.BinaryName())
+	}
+
+	if err := performAgentUpdate(spec); err != nil {
+		return err
+	}
+
+	if elog != nil {
+		elog.Info("agent auto-update completed successfully", "agent", spec.BinaryName())
+	}
+
+	// Touch the timestamp file (content doesn't matter, we use ModTime)
+	return os.WriteFile(updateFile, []byte(time.Now().Format(time.RFC3339)+"\n"), 0644)
+}
+
+// performAgentUpdate runs the agent's update command, then repairs the shim so
+// that the wrapper remains the entry point for the agent binary name.
+//
+// The update flow:
+//  1. Run <agent>-real update (e.g. claude-real update)
+//  2. The updater may overwrite the <agent> symlink to point to the new version
+//  3. Read where <agent> now points — that's the new real binary
+//  4. Update <agent>-real to point to the new version
+//  5. Restore <agent> to point back to our wrapper shim
+func performAgentUpdate(spec AgentSpec) error {
+	realBinaryPath, err := spec.FindBinary()
+	if err != nil {
+		return fmt.Errorf("cannot find agent binary for update: %w", err)
+	}
+
+	updateArgs := spec.UpdateArgs()
+	if elog != nil {
+		elog.Info("running agent update command", "binary", realBinaryPath, "args", updateArgs)
+	}
+
+	cmd := exec.Command(realBinaryPath, updateArgs...)
+	output, err := cmd.CombinedOutput()
+	if elog != nil && len(output) > 0 {
+		elog.Info("agent update command output", "output", string(output))
+	}
+	if err != nil {
+		return fmt.Errorf("agent update command failed: %w", err)
+	}
+
+	if elog != nil {
+		elog.Info("agent update command exited successfully, ensuring shim is intact")
+	}
+
+	return ensureAgentShim(spec, realBinaryPath)
+}
+
+// ensureAgentShim verifies and repairs the shim setup after an update.
+//
+// Given realBinaryPath (e.g. /home/agent/.local/bin/claude-real), the agent
+// path is derived by stripping the "-real" suffix (e.g. /home/agent/.local/bin/claude).
+//
+// If the updater overwrote the agent symlink, we capture where it now points,
+// update <agent>-real to that target, and restore <agent> to point to our wrapper.
+func ensureAgentShim(spec AgentSpec, realBinaryPath string) error {
+	binaryName := spec.BinaryName()
+	dir := filepath.Dir(realBinaryPath)
+	agentPath := filepath.Join(dir, binaryName)
+	wrapperPath := filepath.Join("/usr/local/bin", spec.WrapperName())
+
+	// Check if the agent symlink still points to our wrapper
+	currentTarget, err := os.Readlink(agentPath)
+	if err == nil && currentTarget == wrapperPath {
+		if elog != nil {
+			elog.Info("shim is intact, no repair needed")
+		}
+		return nil
+	}
+
+	if elog != nil {
+		elog.Info("shim was overwritten by update, repairing",
+			"agent_path", agentPath,
+			"current_target", currentTarget,
+			"expected_wrapper", wrapperPath)
+	}
+
+	// The updater changed <agent> — figure out the new real binary location.
+	// If <agent> is a symlink, the target is the new version.
+	// If <agent> is a regular file, move it to <agent>-real.
+	if currentTarget != "" {
+		// It's a symlink — update <agent>-real to point to the same target
+		os.Remove(realBinaryPath)
+		if err := os.Symlink(currentTarget, realBinaryPath); err != nil {
+			return fmt.Errorf("failed to update %s-real symlink: %w", binaryName, err)
+		}
+	} else {
+		// It's a regular file (or readlink failed) — move it to <agent>-real
+		if err := os.Rename(agentPath, realBinaryPath); err != nil {
+			return fmt.Errorf("failed to move updated binary to %s-real: %w", binaryName, err)
+		}
+	}
+
+	// Restore <agent> to point to our wrapper
+	os.Remove(agentPath)
+	if err := os.Symlink(wrapperPath, agentPath); err != nil {
+		return fmt.Errorf("failed to restore wrapper symlink: %w", err)
+	}
+
+	if elog != nil {
+		elog.Info("shim repaired successfully",
+			"agent_path", agentPath, "target", wrapperPath,
+			"real_path", realBinaryPath)
+	}
+
+	return nil
 }
 
 // runAgentWithStreamTransformer spawns the agent as a subprocess and pipes its
