@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	cli "github.com/streamingfast/cli"
 	"github.com/streamingfast/sbox/claude"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -378,7 +379,7 @@ func RunEntrypoint(args []string) error {
 	// Initialize file logger (note: log file won't be closed since we exec)
 	_ = initEntrypointLog()
 
-	elog.Info("=== RunEntrypoint starting ===", "args", args)
+	elog.Info("=== RunEntrypoint starting ===", "version", cli.GetDisplayVersion(Version), "args", args)
 	logEnvironment()
 
 	zlog.Info("running sbox entrypoint")

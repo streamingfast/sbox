@@ -7,7 +7,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.1
 	github.com/spf13/cobra v1.1.3
 	github.com/spf13/pflag v1.0.5
-	github.com/streamingfast/cli v0.0.4-0.20250815192146-d8a233ec3d0b
+	github.com/streamingfast/cli v0.0.4-0.20260316180044-4d2456dc1f28
 	github.com/streamingfast/logging v0.0.0-20230608130331-f22c91403091
 	github.com/stretchr/testify v1.8.1
 	go.uber.org/zap v1.21.0

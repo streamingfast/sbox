@@ -131,6 +131,7 @@ func (tb *TemplateBuilder) TemplateHash() string {
 //   - If it equals "local", returns "" (indicates local build mode)
 //   - If it contains '/', use it as-is (full image name like "ghcr.io/org/image:tag")
 //   - Otherwise, prepend "ghcr.io/streamingfast/sbox:" (tag only like "dev" -> "ghcr.io/streamingfast/sbox:dev")
+//
 // If not set, constructs image from SboxBinaryImage constant and version.
 func (tb *TemplateBuilder) entrypointImage() string {
 	envImage := os.Getenv("SBOX_ENTRYPOINT_IMAGE")
