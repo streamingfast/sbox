@@ -2,9 +2,13 @@ package sbox
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/streamingfast/sbox/claude"
+	"github.com/streamingfast/sbox/opencode"
 )
 
 // AgentType represents the AI agent to run in the sandbox
@@ -19,6 +23,15 @@ const (
 
 // DefaultAgent is the default agent type when not specified
 const DefaultAgent = AgentClaude
+
+// StreamPrinter processes agent JSON stream output lines and prints
+// human-readable formatted output. Both Claude and OpenCode implement this
+// interface with their own stream formats.
+type StreamPrinter interface {
+	// ProcessLine parses a single JSON line and prints formatted output.
+	// Returns true if the line was handled, false if skipped/unknown.
+	ProcessLine(line string) bool
+}
 
 // ValidAgentTypes contains all valid agent type values
 var ValidAgentTypes = []AgentType{AgentClaude, AgentOpenCode}
@@ -59,6 +72,15 @@ type AgentSpec interface {
 	// UpdateArgs returns the command-line arguments to update the agent.
 	// Returns nil if the agent does not support managed updates.
 	UpdateArgs() []string
+
+	// PromptArgs returns the CLI arguments needed to run the agent in
+	// non-interactive prompt mode with JSON stream output. The prompt string
+	// is appended as the last argument by the caller.
+	PromptArgs() []string
+
+	// NewStreamPrinter creates a stream printer that parses the agent's
+	// JSON stream output and writes human-readable formatted output to w.
+	NewStreamPrinter(w io.Writer) StreamPrinter
 
 	// DisableAutoUpdateEnv returns environment variables to set in order to
 	// prevent the agent from auto-updating itself (we manage updates via sbox).
@@ -158,6 +180,14 @@ func (a *ClaudeAgent) UpdateArgs() []string {
 	return []string{"update"}
 }
 
+func (a *ClaudeAgent) PromptArgs() []string {
+	return []string{"-p", "--output-format=stream-json", "--verbose"}
+}
+
+func (a *ClaudeAgent) NewStreamPrinter(w io.Writer) StreamPrinter {
+	return claude.NewStreamPrinter(w)
+}
+
 func (a *ClaudeAgent) DisableAutoUpdateEnv() map[string]string {
 	return map[string]string{"DISABLE_AUTOUPDATER": "1"}
 }
@@ -224,6 +254,14 @@ func (a *OpenCodeAgent) ExecArgs(pluginDirs []string) []string {
 	argv := []string{"opencode"}
 	// TODO: OpenCode plugin support - needs investigation of how OpenCode handles plugins
 	return argv
+}
+
+func (a *OpenCodeAgent) PromptArgs() []string {
+	return []string{"run", "--format=json"}
+}
+
+func (a *OpenCodeAgent) NewStreamPrinter(w io.Writer) StreamPrinter {
+	return opencode.NewStreamPrinter(w)
 }
 
 func (a *OpenCodeAgent) UpdateArgs() []string {

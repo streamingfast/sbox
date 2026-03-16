@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## v1.6.0
+
+### Added
+
+- `sbox loop` and prompt mode now support OpenCode agent (`--agent=opencode`). OpenCode JSON stream output (`opencode run --format=json`) is parsed and displayed with the same visual style as Claude stream output.
+- Add `opencode` package with `StreamPrinter` for parsing OpenCode's JSON stream format (`step_start`, `tool_use`, `text`, `step_finish` events).
+- Add `PromptArgs()` and `NewStreamPrinter()` to `AgentSpec` interface, making prompt/loop mode agent-agnostic.
+
 ## v1.5.1
 
 ### Added

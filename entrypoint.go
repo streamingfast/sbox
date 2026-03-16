@@ -20,7 +20,6 @@ import (
 	"time"
 
 	cli "github.com/streamingfast/cli"
-	"github.com/streamingfast/sbox/claude"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
@@ -623,18 +622,9 @@ func RunEntrypoint(args []string) error {
 	if config.Prompt != "" {
 		elog.Info("adding prompt from entrypoint config", "prompt_length", len(config.Prompt))
 
-		// Write prompt to file to avoid shell argument length limits
-		promptFile := filepath.Join(workspaceDir, ".sbox", "run.prompt")
-		if err := os.WriteFile(promptFile, []byte(config.Prompt), 0644); err != nil {
-			return fmt.Errorf("failed to write run prompt file: %w", err)
-		}
-
-		relPromptFile := filepath.Join(".sbox", "run.prompt")
-		shortPrompt := fmt.Sprintf("Read file %s, it contains your prompt.", relPromptFile)
-
-		// Flags first, then positional prompt last
-		args = append([]string{"-p", "--output-format=stream-json", "--verbose"}, args...)
-		args = append(args, shortPrompt)
+		// Agent-specific flags for prompt mode, then positional prompt last
+		args = append(spec.PromptArgs(), args...)
+		args = append(args, config.Prompt)
 		return runAgentWithStreamTransformer(AgentType(agentType), args, pluginDirs)
 	}
 
@@ -1112,8 +1102,8 @@ func ensureAgentShim(spec AgentSpec, realBinaryPath string) error {
 }
 
 // runAgentWithStreamTransformer spawns the agent as a subprocess and pipes its
-// stdout through a stream-json pretty printer. Used in loop mode where the agent
-// outputs stream-json and we want to display human-readable progress.
+// stdout through a stream printer. Used in loop mode and single prompt mode
+// where the agent outputs JSON and we want to display human-readable progress.
 func runAgentWithStreamTransformer(agentType AgentType, args []string, pluginDirs []string) error {
 	spec := GetAgentSpec(agentType)
 
@@ -1143,7 +1133,7 @@ func runAgentWithStreamTransformer(agentType AgentType, args []string, pluginDir
 		return fmt.Errorf("failed to start agent: %w", err)
 	}
 
-	printer := claude.NewStreamPrinter(os.Stdout)
+	printer := spec.NewStreamPrinter(os.Stdout)
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer for large JSON lines
@@ -1212,21 +1202,12 @@ func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, p
 			iterationPrompt = fmt.Sprintf("%s\n\n**Iteration %d**: This is loop iteration #%d. The goal has not yet been confirmed as complete. Continue working toward it.\n", fullPrompt, iteration, iteration)
 		}
 
-		// Write prompt to file to avoid shell argument length limits
-		promptFile := filepath.Join(workspaceDir, ".sbox", "loop.prompt")
-		if err := os.WriteFile(promptFile, []byte(iterationPrompt), 0644); err != nil {
-			return fmt.Errorf("failed to write loop prompt file: %w", err)
-		}
-
 		ui.Iteration(iteration, completionCount)
 
-		// Reference the prompt file instead of passing the full prompt as an argument
-		relPromptFile := filepath.Join(".sbox", "loop.prompt")
-		shortPrompt := fmt.Sprintf("Read file %s, it contains your prompt.", relPromptFile)
-
-		// Build args for this iteration: flags first, then positional prompt last
-		args := append([]string{"-p", "--output-format=stream-json", "--verbose"}, baseArgs...)
-		args = append(args, shortPrompt)
+		// Build args for this iteration: agent-specific prompt flags, then prompt last
+		spec := GetAgentSpec(agentType)
+		args := append(spec.PromptArgs(), baseArgs...)
+		args = append(args, iterationPrompt)
 
 		if err := runAgentWithStreamTransformer(agentType, args, pluginDirs); err != nil {
 			ui.AgentError(err)
