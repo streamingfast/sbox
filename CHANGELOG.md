@@ -12,6 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Add `opencode` package with `StreamPrinter` for parsing OpenCode's JSON stream format (`step_start`, `tool_use`, `text`, `step_finish` events).
 - Add `PromptArgs()` and `NewStreamPrinter()` to `AgentSpec` interface, making prompt/loop mode agent-agnostic.
 
+### Changed
+
+- Remove prompt file indirection in loop/prompt mode — prompt is now passed directly as a CLI argument instead of writing to a file and asking the agent to read it.
+
+### Fixed
+
+- Claude stream printer now displays context for many more tools: `ToolSearch`, `WebSearch`, `WebFetch`, `Skill`, `TaskCreate`, `TaskUpdate`, `TaskOutput`, `NotebookEdit`. Unknown tools fall back to extracting common field names (`query`, `description`, `prompt`, etc.) from their input.
+
 ## v1.5.1
 
 ### Added

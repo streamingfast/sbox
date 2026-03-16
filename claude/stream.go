@@ -336,6 +336,83 @@ func toolArg(name string, input json.RawMessage) string {
 		if json.Unmarshal(input, &v) == nil {
 			return v.Description
 		}
+	case "ToolSearch":
+		var v struct {
+			Query string `json:"query"`
+		}
+		if json.Unmarshal(input, &v) == nil {
+			return v.Query
+		}
+	case "WebSearch":
+		var v struct {
+			Query string `json:"query"`
+		}
+		if json.Unmarshal(input, &v) == nil {
+			return v.Query
+		}
+	case "WebFetch":
+		var v struct {
+			URL string `json:"url"`
+		}
+		if json.Unmarshal(input, &v) == nil {
+			return truncate(v.URL, 80)
+		}
+	case "Skill":
+		var v struct {
+			Skill string `json:"skill"`
+		}
+		if json.Unmarshal(input, &v) == nil {
+			return v.Skill
+		}
+	case "TaskCreate", "TaskUpdate":
+		var v struct {
+			Description string `json:"description"`
+		}
+		if json.Unmarshal(input, &v) == nil {
+			return truncate(v.Description, 80)
+		}
+	case "TaskOutput":
+		var v struct {
+			TaskID string `json:"task_id"`
+		}
+		if json.Unmarshal(input, &v) == nil {
+			return v.TaskID
+		}
+	case "NotebookEdit":
+		var v struct {
+			FilePath string `json:"file_path"`
+		}
+		if json.Unmarshal(input, &v) == nil {
+			return shortenPath(v.FilePath)
+		}
+	default:
+		return toolArgFallback(input)
+	}
+	return ""
+}
+
+// toolArgFallback tries common field names to extract a display argument
+// from an unknown tool's input JSON.
+func toolArgFallback(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(input, &fields) != nil {
+		return ""
+	}
+
+	// Try common field names in priority order
+	for _, key := range []string{"query", "description", "prompt", "name", "path", "file_path", "url", "command", "skill"} {
+		raw, ok := fields[key]
+		if !ok {
+			continue
+		}
+		var s string
+		if json.Unmarshal(raw, &s) == nil && s != "" {
+			return truncate(s, 80)
+		}
 	}
 	return ""
 }
