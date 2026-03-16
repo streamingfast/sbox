@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestProjectHash(t *testing.T) {
@@ -1240,4 +1241,100 @@ func TestIsLocalBuildMode(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestMergeConfigFile_JSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		src      string // host-prepared (base)
+		dst      string // sandbox (wins for conflicts)
+		expected map[string]any
+	}{
+		{
+			name: "destination does not exist, copies source",
+			src:  `{"$schema": "https://opencode.ai/config.json", "permission": {"*": "allow"}}`,
+			dst:  "", // empty means file won't be created
+			expected: map[string]any{
+				"$schema":    "https://opencode.ai/config.json",
+				"permission": map[string]any{"*": "allow"},
+			},
+		},
+		{
+			name: "sandbox wins for conflicting keys",
+			src:  `{"model": "sonnet", "permission": {"*": "allow"}}`,
+			dst:  `{"model": "opus"}`,
+			expected: map[string]any{
+				"model":      "opus",
+				"permission": map[string]any{"*": "allow"},
+			},
+		},
+		{
+			name: "host adds new keys, sandbox keeps its own",
+			src:  `{"permission": {"*": "allow"}, "$schema": "https://opencode.ai/config.json"}`,
+			dst:  `{"model": "opus", "temperature": 0.5}`,
+			expected: map[string]any{
+				"permission":  map[string]any{"*": "allow"},
+				"$schema":     "https://opencode.ai/config.json",
+				"model":       "opus",
+				"temperature": 0.5,
+			},
+		},
+		{
+			name: "deep merge nested objects",
+			src:  `{"settings": {"theme": "dark", "fontSize": 14}}`,
+			dst:  `{"settings": {"theme": "light"}}`,
+			expected: map[string]any{
+				"settings": map[string]any{
+					"theme":    "light",
+					"fontSize": float64(14),
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			srcPath := filepath.Join(tmpDir, "src.json")
+			dstPath := filepath.Join(tmpDir, "dst.json")
+
+			require.NoError(t, os.WriteFile(srcPath, []byte(tt.src), 0644))
+			if tt.dst != "" {
+				require.NoError(t, os.WriteFile(dstPath, []byte(tt.dst), 0644))
+			}
+
+			err := mergeConfigFile(srcPath, dstPath)
+			require.NoError(t, err)
+
+			data, err := os.ReadFile(dstPath)
+			require.NoError(t, err)
+
+			var result map[string]any
+			require.NoError(t, json.Unmarshal(data, &result))
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestMergeConfigFile_YAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "src.yaml")
+	dstPath := filepath.Join(tmpDir, "dst.yaml")
+
+	require.NoError(t, os.WriteFile(srcPath, []byte("host_key: host_value\nshared: from_host\n"), 0644))
+	require.NoError(t, os.WriteFile(dstPath, []byte("sandbox_key: sandbox_value\nshared: from_sandbox\n"), 0644))
+
+	err := mergeConfigFile(srcPath, dstPath)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(dstPath)
+	require.NoError(t, err)
+
+	// YAML output needs to be parsed as YAML, not JSON
+	var result map[string]any
+	require.NoError(t, yaml.Unmarshal(data, &result))
+
+	assert.Equal(t, "host_value", result["host_key"])
+	assert.Equal(t, "sandbox_value", result["sandbox_key"])
+	assert.Equal(t, "from_sandbox", result["shared"])
 }

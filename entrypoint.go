@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kaptinlin/jsonmerge"
 	cli "github.com/streamingfast/cli"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -505,36 +506,45 @@ func RunEntrypoint(args []string) error {
 
 	// Setup OpenCode config and auth files
 	if agent == AgentOpenCode {
-		// Setup opencode.json (config file)
+		// Setup opencode.json (config file) — merge with existing sandbox config
+		// so that sandbox-side changes (e.g. model selection) are preserved while
+		// host-side updates (e.g. permissions) are applied.
 		opencodeConfigSrc := filepath.Join(workspaceDir, ".sbox", "opencode.json")
 		if _, err := os.Stat(opencodeConfigSrc); err == nil {
 			opencodeConfigDst := filepath.Join(agentHome, "opencode.json")
-			elog.Info("copying opencode.json to agent home", "src", opencodeConfigSrc, "dst", opencodeConfigDst)
-			if err := copyFile(opencodeConfigSrc, opencodeConfigDst); err != nil {
-				elog.Warn("failed to copy opencode.json", "error", err)
-				zlog.Warn("failed to copy opencode.json to agent home", zap.Error(err))
+			elog.Info("merging opencode.json into agent home", "src", opencodeConfigSrc, "dst", opencodeConfigDst)
+			if err := mergeConfigFile(opencodeConfigSrc, opencodeConfigDst); err != nil {
+				elog.Warn("failed to merge opencode.json", "error", err)
+				zlog.Warn("failed to merge opencode.json into agent home", zap.Error(err))
 				// Non-fatal - continue anyway
 			} else {
-				elog.Info("successfully copied opencode.json")
-				zlog.Info("copied opencode.json to agent home", zap.String("dst", opencodeConfigDst))
+				elog.Info("successfully merged opencode.json")
+				zlog.Info("merged opencode.json into agent home", zap.String("dst", opencodeConfigDst))
+			}
+
+			// Always enforce full permissions after merge — the sandbox must run
+			// with all permissions allowed regardless of what the cached or host
+			// config had.
+			if err := enforceJSONField(opencodeConfigDst, "permission", map[string]any{"*": "allow"}); err != nil {
+				elog.Warn("failed to enforce permissions in opencode.json", "error", err)
 			}
 		} else {
 			elog.Debug("opencode.json not found in .sbox, skipping", "path", opencodeConfigSrc)
 			zlog.Debug("opencode.json not found in .sbox, skipping", zap.String("path", opencodeConfigSrc))
 		}
 
-		// Setup tui.json (TUI config file)
+		// Setup tui.json (TUI config file) — merge with existing sandbox config
 		opencodeTUIConfigSrc := filepath.Join(workspaceDir, ".sbox", "tui.json")
 		if _, err := os.Stat(opencodeTUIConfigSrc); err == nil {
 			opencodeTUIConfigDst := filepath.Join(agentHome, "tui.json")
-			elog.Info("copying tui.json to agent home", "src", opencodeTUIConfigSrc, "dst", opencodeTUIConfigDst)
-			if err := copyFile(opencodeTUIConfigSrc, opencodeTUIConfigDst); err != nil {
-				elog.Warn("failed to copy tui.json", "error", err)
-				zlog.Warn("failed to copy tui.json to agent home", zap.Error(err))
+			elog.Info("merging tui.json into agent home", "src", opencodeTUIConfigSrc, "dst", opencodeTUIConfigDst)
+			if err := mergeConfigFile(opencodeTUIConfigSrc, opencodeTUIConfigDst); err != nil {
+				elog.Warn("failed to merge tui.json", "error", err)
+				zlog.Warn("failed to merge tui.json into agent home", zap.Error(err))
 				// Non-fatal - continue anyway
 			} else {
-				elog.Info("successfully copied tui.json")
-				zlog.Info("copied tui.json to agent home", zap.String("dst", opencodeTUIConfigDst))
+				elog.Info("successfully merged tui.json")
+				zlog.Info("merged tui.json into agent home", zap.String("dst", opencodeTUIConfigDst))
 			}
 		} else {
 			elog.Debug("tui.json not found in .sbox, skipping", "path", opencodeTUIConfigSrc)
@@ -1291,6 +1301,112 @@ func copyFile(src, dst string) error {
 
 	_, err = io.Copy(dstFile, srcFile)
 	return err
+}
+
+// mergeConfigFile merges a source config file (from .sbox/, host-prepared) into
+// a destination config file (in the sandbox agent home). If the destination
+// already exists, the two are deep-merged with the destination (sandbox) winning
+// for any conflicting keys. If the destination does not exist, the source is
+// simply copied.
+//
+// Supports both JSON (.json) and YAML (.yaml, .yml) files. The file format is
+// determined by the source file extension.
+func mergeConfigFile(src, dst string) error {
+	srcData, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("failed to read source config %s: %w", src, err)
+	}
+
+	isYAML := strings.HasSuffix(src, ".yaml") || strings.HasSuffix(src, ".yml")
+
+	// Parse source into map
+	srcMap := make(map[string]any)
+	if isYAML {
+		if err := yaml.Unmarshal(srcData, &srcMap); err != nil {
+			return fmt.Errorf("failed to parse source YAML %s: %w", src, err)
+		}
+	} else {
+		if err := json.Unmarshal(srcData, &srcMap); err != nil {
+			return fmt.Errorf("failed to parse source JSON %s: %w", src, err)
+		}
+	}
+
+	// If destination doesn't exist, just write the source
+	dstData, err := os.ReadFile(dst)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return copyFile(src, dst)
+		}
+		return fmt.Errorf("failed to read destination config %s: %w", dst, err)
+	}
+
+	// Parse destination into map
+	dstMap := make(map[string]any)
+	if isYAML {
+		if err := yaml.Unmarshal(dstData, &dstMap); err != nil {
+			// Destination is corrupted, overwrite with source
+			if elog != nil {
+				elog.Warn("destination config is invalid, overwriting", "dst", dst, "error", err)
+			}
+			return copyFile(src, dst)
+		}
+	} else {
+		if err := json.Unmarshal(dstData, &dstMap); err != nil {
+			if elog != nil {
+				elog.Warn("destination config is invalid, overwriting", "dst", dst, "error", err)
+			}
+			return copyFile(src, dst)
+		}
+	}
+
+	// Merge using RFC 7386 JSON Merge Patch semantics:
+	// source (host-prepared) is the target, destination (sandbox) is the patch.
+	// This means sandbox values override host values — sandbox wins for conflicts.
+	result, err := jsonmerge.Merge(srcMap, dstMap)
+	if err != nil {
+		return fmt.Errorf("failed to merge configs: %w", err)
+	}
+
+	// Write merged result
+	var outData []byte
+	if isYAML {
+		outData, err = yaml.Marshal(result.Doc)
+	} else {
+		outData, err = json.MarshalIndent(result.Doc, "", "  ")
+		if err == nil {
+			outData = append(outData, '\n')
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("failed to marshal merged config: %w", err)
+	}
+
+	return os.WriteFile(dst, outData, 0644)
+}
+
+// enforceJSONField reads a JSON file, sets the given key to the given value
+// (overriding whatever was there), and writes it back. This is used to enforce
+// critical fields like permissions that must always have a specific value
+// regardless of merge results.
+func enforceJSONField(path string, key string, value any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+
+	m[key] = value
+
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, append(out, '\n'), 0644)
 }
 
 // PrepareSboxDirectory populates the .sbox/ directory in the workspace with

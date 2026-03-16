@@ -1,15 +1,16 @@
 module github.com/streamingfast/sbox
 
-go 1.25.8
+go 1.26
 
 require (
 	charm.land/glamour/v2 v2.0.0
 	charm.land/lipgloss/v2 v2.0.1
+	github.com/kaptinlin/jsonmerge v0.2.13
 	github.com/spf13/cobra v1.1.3
 	github.com/spf13/pflag v1.0.5
 	github.com/streamingfast/cli v0.0.4-0.20260316180044-4d2456dc1f28
 	github.com/streamingfast/logging v0.0.0-20230608130331-f22c91403091
-	github.com/stretchr/testify v1.8.1
+	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.21.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -34,10 +35,12 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dlclark/regexp2 v1.11.0 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
+	github.com/go-json-experiment/json v0.0.0-20251027170946-4849db3c2f7e // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/juju/ansiterm v0.0.0-20180109212912-720a0952cc2a // indirect
+	github.com/kaptinlin/deepclone v0.2.9 // indirect
 	github.com/lithammer/dedent v1.1.0 // indirect
 	github.com/logrusorgru/aurora v2.0.3+incompatible // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect

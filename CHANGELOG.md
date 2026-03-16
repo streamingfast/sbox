@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Config files (`opencode.json`, `tui.json`) are now deep-merged instead of overwritten when setting up the sandbox. Host-prepared config provides the base, sandbox-side changes (e.g. model selection) win for conflicting keys. Uses RFC 7386 JSON Merge Patch via `kaptinlin/jsonmerge`.
 - Claude stream printer now displays context for many more tools: `ToolSearch`, `WebSearch`, `WebFetch`, `Skill`, `TaskCreate`, `TaskUpdate`, `TaskOutput`, `NotebookEdit`. Unknown tools fall back to extracting common field names (`query`, `description`, `prompt`, etc.) from their input.
 
 ## v1.5.1
