@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Add `sbox backend` command group (`list`, `set`, `show`) to manage the default container backend globally, mirroring the existing `sbox agent` command group.
 - Add `default_backend` and `default_agent` keys to `sbox config` for viewing and setting defaults via the config command.
 
+### Fixed
+
+- Fix `sbox info` showing `claude` in docker sandbox create command regardless of the configured agent. Now correctly displays the resolved agent binary (e.g. `opencode`).
+
 ## v1.6.0
 
 ### Added

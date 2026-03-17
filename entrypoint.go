@@ -41,8 +41,8 @@ func initEntrypointLog() func() {
 		return func() {}
 	}
 
-	// Write separator for new run
-	fmt.Fprintf(f, "\n========== sbox entrypoint new run at %s ==========\n", time.Now().Format(time.RFC3339))
+	// Write separator for new run (extra blank line before makes consecutive runs easy to spot)
+	fmt.Fprintf(f, "\n\n========== sbox entrypoint new run at %s ==========\n", time.Now().Format(time.RFC3339))
 
 	elog = slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{
 		Level: slog.LevelDebug,

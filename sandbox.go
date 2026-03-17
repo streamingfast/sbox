@@ -96,9 +96,10 @@ func BuildSandboxCommands(opts SandboxOptions) (*SandboxCommands, error) {
 		createArgs = append(createArgs, "--template", templateImage)
 	}
 
-	// Add the Claude agent and workspace path
+	// Add the agent binary and workspace path
+	spec := GetAgentSpec(agentType)
 	absPath, _ := filepath.Abs(opts.WorkspaceDir)
-	createArgs = append(createArgs, "claude", absPath)
+	createArgs = append(createArgs, spec.BinaryName(), absPath)
 
 	// Build run command args (always the same simple form)
 	runArgs := []string{"sandbox", "run", sandboxName}
