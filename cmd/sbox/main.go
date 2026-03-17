@@ -38,6 +38,7 @@ func main() {
 		ProfileGroup,
 		EnvGroup,
 		AgentGroup,
+		BackendGroup,
 		ConfigCommand,
 		CleanCommand,
 		ShellCommand,

@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+### Added
+
+- Add `sbox backend` command group (`list`, `set`, `show`) to manage the default container backend globally, mirroring the existing `sbox agent` command group.
+- Add `default_backend` and `default_agent` keys to `sbox config` for viewing and setting defaults via the config command.
+
 ## v1.6.0
 
 ### Added

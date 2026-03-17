@@ -106,6 +106,22 @@ Available profiles:
 
 Profiles can declare dependencies on other profiles. For example, `substreams` automatically pulls in `rust`.
 
+### `sbox backend`
+
+Manage which container backend (Sandbox or Container) to use.
+
+```bash
+sbox backend list              # Show available backends
+sbox backend set container     # Set Container as default globally
+sbox backend show              # Show current default backend
+```
+
+The backend can be configured at multiple levels (later overrides earlier):
+1. Global config (`default_backend` in `~/.config/sbox/config.yaml`)
+2. `sbox.yaml` file (`backend` field)
+3. Project config (persisted from `--backend` flag)
+4. CLI flag (`--backend`)
+
 ### `sbox agent`
 
 Manage which AI agent (Claude Code or OpenCode) to use.
@@ -156,9 +172,11 @@ The API key is stored in the global config and passed as `ANTHROPIC_API_KEY` to 
 View or edit global configuration.
 
 ```bash
-sbox config                    # Show all config
-sbox config claude_home        # Show specific setting
-sbox config docker_socket auto # Set docker socket behavior (auto/always/never)
+sbox config                           # Show all config
+sbox config claude_home               # Show specific setting
+sbox config docker_socket auto        # Set docker socket behavior (auto/always/never)
+sbox config default_backend container # Set default backend (sandbox/container)
+sbox config default_agent opencode    # Set default agent (claude/opencode)
 ```
 
 ### `sbox clean`

@@ -31,6 +31,8 @@ func configE(cmd *cobra.Command, args []string) error {
 		cmd.Printf("  claude_home: %s\n", config.ClaudeHome)
 		cmd.Printf("  sbox_data_dir: %s\n", config.SboxDataDir)
 		cmd.Printf("  docker_socket: %s\n", config.DockerSocket)
+		cmd.Printf("  default_backend: %s\n", configValueOrDefault(config.DefaultBackend, string(sbox.DefaultBackend)))
+		cmd.Printf("  default_agent: %s\n", configValueOrDefault(config.DefaultAgent, string(sbox.DefaultAgent)))
 		cmd.Printf("  default_profiles: %v\n", config.DefaultProfiles)
 		return nil
 	}
@@ -46,6 +48,10 @@ func configE(cmd *cobra.Command, args []string) error {
 			cmd.Println(config.SboxDataDir)
 		case "docker_socket":
 			cmd.Println(config.DockerSocket)
+		case "default_backend":
+			cmd.Println(configValueOrDefault(config.DefaultBackend, string(sbox.DefaultBackend)))
+		case "default_agent":
+			cmd.Println(configValueOrDefault(config.DefaultAgent, string(sbox.DefaultAgent)))
 		case "default_profiles":
 			cmd.Printf("%v\n", config.DefaultProfiles)
 		default:
@@ -64,6 +70,16 @@ func configE(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("docker_socket must be one of: auto, always, never")
 		}
 		config.DockerSocket = value
+	case "default_backend":
+		if err := sbox.ValidateBackend(value); err != nil {
+			return err
+		}
+		config.DefaultBackend = value
+	case "default_agent":
+		if err := sbox.ValidateAgent(value); err != nil {
+			return err
+		}
+		config.DefaultAgent = value
 	default:
 		return fmt.Errorf("cannot set config key: %s (read-only or unknown)", key)
 	}
@@ -74,4 +90,11 @@ func configE(cmd *cobra.Command, args []string) error {
 
 	cmd.Printf("Set %s = %s\n", key, value)
 	return nil
+}
+
+func configValueOrDefault(value, defaultValue string) string {
+	if value == "" {
+		return defaultValue
+	}
+	return value
 }
