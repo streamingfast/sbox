@@ -91,14 +91,36 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 	}
 
 	if existing != nil {
-		// Container exists - check status and handle accordingly
-		if existing.Status == "running" {
-			DefaultUI.Status("Attaching to running container '%s'", containerName)
-			return b.attachContainer(containerName, opts)
+		// Check if the container's TTY mode matches what we need.
+		// A container created for prompt/loop mode (no TTY) cannot be reused
+		// for interactive mode (needs TTY), and vice versa. If there's a
+		// mismatch, remove the old container and create a new one.
+		needsTTY := opts.Prompt == ""
+		hasTTY := b.containerHasTTY(existing.ID)
+		if needsTTY != hasTTY {
+			zlog.Info("container TTY mode mismatch, recreating",
+				zap.Bool("needs_tty", needsTTY),
+				zap.Bool("has_tty", hasTTY))
+			DefaultUI.Status("Recreating container '%s' (TTY mode changed)", containerName)
+
+			// Stop if running, then remove
+			if existing.Status == "running" {
+				stopCmd := exec.Command("docker", "stop", existing.ID)
+				_ = stopCmd.Run()
+			}
+			rmCmd := exec.Command("docker", "rm", existing.ID)
+			_ = rmCmd.Run()
+			// Fall through to create a new container below
+		} else {
+			// Container exists with matching TTY mode - reuse it
+			if existing.Status == "running" {
+				DefaultUI.Status("Attaching to running container '%s'", containerName)
+				return b.attachContainer(containerName, opts)
+			}
+			// Container exists but not running - start it
+			DefaultUI.Status("Starting existing container '%s'", containerName)
+			return b.startContainer(containerName, opts)
 		}
-		// Container exists but not running - start it
-		DefaultUI.Status("Starting existing container '%s'", containerName)
-		return b.startContainer(containerName, opts)
 	}
 
 	// Container doesn't exist - create and run it
@@ -551,6 +573,19 @@ func (b *ContainerBackend) List() ([]ContainerInfo, error) {
 	}
 
 	return infos, nil
+}
+
+// containerHasTTY checks if a container was created with TTY enabled.
+func (b *ContainerBackend) containerHasTTY(containerID string) bool {
+	cmd := exec.Command("docker", "inspect", containerID, "--format", "{{.Config.Tty}}")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(stdout.String()) == "true"
 }
 
 // getContainerWorkspace inspects a container to find its workspace mount
