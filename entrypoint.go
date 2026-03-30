@@ -504,6 +504,58 @@ func RunEntrypoint(args []string) error {
 		return fmt.Errorf("failed to setup agents: %w", err)
 	}
 
+	// Setup Claude settings files — merge with existing sandbox config so that
+	// sandbox-side changes (e.g. model selection, theme) are preserved while
+	// host-side updates (e.g. MCP servers) are applied.
+	if agent == AgentClaude {
+		claudeSettingsSrc := filepath.Join(workspaceDir, ".sbox", "claude-settings.json")
+		if _, err := os.Stat(claudeSettingsSrc); err == nil {
+			claudeSettingsDst := filepath.Join(agentHome, "settings.json")
+			elog.Info("merging claude settings.json into agent home", "src", claudeSettingsSrc, "dst", claudeSettingsDst)
+			if err := mergeConfigFile(claudeSettingsSrc, claudeSettingsDst); err != nil {
+				elog.Warn("failed to merge claude settings.json", "error", err)
+				zlog.Warn("failed to merge claude settings.json into agent home", zap.Error(err))
+				// Non-fatal - continue anyway
+			} else {
+				elog.Info("successfully merged claude settings.json")
+				zlog.Info("merged claude settings.json into agent home", zap.String("dst", claudeSettingsDst))
+			}
+
+			// Always enforce bypass-permissions mode after merge — the sandbox must
+			// run without permission prompts regardless of what the cached or host
+			// config had.
+			for key, val := range map[string]any{
+				"defaultMode":                       "bypassPermissions",
+				"bypassPermissionsModeAccepted":     true,
+				"skipDangerousModePermissionPrompt": true,
+			} {
+				if err := enforceJSONField(claudeSettingsDst, key, val); err != nil {
+					elog.Warn("failed to enforce field in settings.json", "key", key, "error", err)
+				}
+			}
+		} else {
+			elog.Debug("claude-settings.json not found in .sbox, skipping", "path", claudeSettingsSrc)
+			zlog.Debug("claude-settings.json not found in .sbox, skipping", zap.String("path", claudeSettingsSrc))
+		}
+
+		claudeSettingsLocalSrc := filepath.Join(workspaceDir, ".sbox", "claude-settings.local.json")
+		if _, err := os.Stat(claudeSettingsLocalSrc); err == nil {
+			claudeSettingsLocalDst := filepath.Join(agentHome, "settings.local.json")
+			elog.Info("merging claude settings.local.json into agent home", "src", claudeSettingsLocalSrc, "dst", claudeSettingsLocalDst)
+			if err := mergeConfigFile(claudeSettingsLocalSrc, claudeSettingsLocalDst); err != nil {
+				elog.Warn("failed to merge claude settings.local.json", "error", err)
+				zlog.Warn("failed to merge claude settings.local.json into agent home", zap.Error(err))
+				// Non-fatal - continue anyway
+			} else {
+				elog.Info("successfully merged claude settings.local.json")
+				zlog.Info("merged claude settings.local.json into agent home", zap.String("dst", claudeSettingsLocalDst))
+			}
+		} else {
+			elog.Debug("claude-settings.local.json not found in .sbox, skipping", "path", claudeSettingsLocalSrc)
+			zlog.Debug("claude-settings.local.json not found in .sbox, skipping", zap.String("path", claudeSettingsLocalSrc))
+		}
+	}
+
 	// Setup OpenCode config and auth files
 	if agent == AgentOpenCode {
 		// Setup opencode.json (config file) — merge with existing sandbox config
@@ -1471,6 +1523,14 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 		entrypointConfig.Agents = agents
 	}
 
+	// Prepare Claude settings files
+	if agent == AgentClaude {
+		if err := prepareClaudeSettings(agentHome, sboxDir); err != nil {
+			zlog.Warn("failed to prepare claude settings", zap.Error(err))
+			// Non-fatal - continue anyway
+		}
+	}
+
 	// Prepare OpenCode files (config and auth)
 	if agent == AgentOpenCode {
 		if err := prepareOpencodeConfig(agentHome, sboxDir); err != nil {
@@ -1647,6 +1707,66 @@ func prepareAgents(claudeHome, sboxDir string) ([]EntrypointAgent, error) {
 	}
 
 	return agents, nil
+}
+
+// prepareClaudeSettings copies settings.json and settings.local.json from the agent home
+// to .sbox/ so the entrypoint can merge them into the sandbox config on startup.
+// For settings.json, sandbox bypass-permissions fields are enforced so they always take
+// effect regardless of what the host config has.
+func prepareClaudeSettings(agentHome, sboxDir string) error {
+	settingsPath := filepath.Join(agentHome, "settings.json")
+	dstPath := filepath.Join(sboxDir, "claude-settings.json")
+
+	config := make(map[string]interface{})
+
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		if err := json.Unmarshal(data, &config); err != nil {
+			zlog.Warn("failed to parse existing settings.json, using default",
+				zap.String("path", settingsPath),
+				zap.Error(err))
+			config = make(map[string]interface{})
+		} else {
+			zlog.Info("loaded existing settings.json", zap.String("path", settingsPath))
+		}
+	} else if !os.IsNotExist(err) {
+		zlog.Warn("failed to read settings.json, using default",
+			zap.String("path", settingsPath),
+			zap.Error(err))
+	}
+
+	// Enforce bypass-permissions fields for sandbox execution
+	config["defaultMode"] = "bypassPermissions"
+	config["bypassPermissionsModeAccepted"] = true
+	config["skipDangerousModePermissionPrompt"] = true
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal claude settings: %w", err)
+	}
+
+	if err := os.WriteFile(dstPath, append(data, '\n'), 0644); err != nil {
+		return fmt.Errorf("failed to write claude settings: %w", err)
+	}
+
+	zlog.Info("prepared claude-settings.json with bypass permissions",
+		zap.String("dst", dstPath),
+		zap.Int("fields", len(config)))
+
+	// Copy settings.local.json as-is if it exists
+	settingsLocalPath := filepath.Join(agentHome, "settings.local.json")
+	if _, err := os.Stat(settingsLocalPath); err == nil {
+		dstLocalPath := filepath.Join(sboxDir, "claude-settings.local.json")
+		if err := copyFile(settingsLocalPath, dstLocalPath); err != nil {
+			zlog.Warn("failed to copy settings.local.json", zap.Error(err))
+			// Non-fatal
+		} else {
+			zlog.Info("copied settings.local.json to .sbox",
+				zap.String("src", settingsLocalPath),
+				zap.String("dst", dstLocalPath))
+		}
+	}
+
+	return nil
 }
 
 // prepareOpencodeConfig creates or updates opencode.json with full permissions for sandbox use.

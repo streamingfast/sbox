@@ -253,8 +253,6 @@ func buildVolumeMounts(opts SandboxOptions, claudeMDPath string, claudeFlags *Cl
 
 	// Get agent-specific home directory
 	agentHome := opts.Config.GetAgentHome(agentType)
-	spec := GetAgentSpec(agentType)
-	configDir := spec.ConfigDirName()
 
 	// Mount plugins cache directory once, then use --plugin-dir for each plugin
 	// This avoids potential Docker limitations with many individual mounts
@@ -275,26 +273,6 @@ func buildVolumeMounts(opts SandboxOptions, claudeMDPath string, claudeFlags *Cl
 	// NOTE: CLAUDE.md is now copied to .sbox/ and installed by the entrypoint
 	// Volume mounts don't work with Docker sandbox MicroVMs
 	_ = claudeMDPath // Unused, kept for backwards compatibility in function signature
-
-	// Mount agent settings.json if it exists (MCP server configuration)
-	settingsPath := filepath.Join(agentHome, "settings.json")
-	if _, err := os.Stat(settingsPath); err == nil {
-		containerSettingsPath := fmt.Sprintf("/home/agent/%s/settings.json", configDir)
-		mounts = append(mounts, "-v", fmt.Sprintf("%s:%s:ro", settingsPath, containerSettingsPath))
-		zlog.Debug("mounting MCP settings file", zap.String("path", settingsPath))
-	} else {
-		zlog.Debug("MCP settings file not found, skipping", zap.String("path", settingsPath))
-	}
-
-	// Mount agent settings.local.json if it exists (local MCP overrides)
-	settingsLocalPath := filepath.Join(agentHome, "settings.local.json")
-	if _, err := os.Stat(settingsLocalPath); err == nil {
-		containerSettingsLocalPath := fmt.Sprintf("/home/agent/%s/settings.local.json", configDir)
-		mounts = append(mounts, "-v", fmt.Sprintf("%s:%s:ro", settingsLocalPath, containerSettingsLocalPath))
-		zlog.Debug("mounting local MCP settings file", zap.String("path", settingsLocalPath))
-	} else {
-		zlog.Debug("local MCP settings file not found, skipping", zap.String("path", settingsLocalPath))
-	}
 
 	// Mount ~/.ssh if it exists
 	homeDir, err := os.UserHomeDir()

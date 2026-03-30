@@ -190,6 +190,14 @@ func (b *ContainerBackend) buildRunArgs(containerName, workspaceDir, image, volu
 	// Set workspace env var (used by entrypoint)
 	args = append(args, "-e", fmt.Sprintf("WORKSPACE_DIR=%s", workspaceDir))
 
+	// Forward terminal capabilities from host to preserve colors and ANSI links
+	if term := os.Getenv("TERM"); term != "" {
+		args = append(args, "-e", "TERM="+term)
+	}
+	if colorterm := os.Getenv("COLORTERM"); colorterm != "" {
+		args = append(args, "-e", "COLORTERM="+colorterm)
+	}
+
 	// Mount SSH directory if it exists (read-only)
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
@@ -232,22 +240,6 @@ func (b *ContainerBackend) buildRunArgs(containerName, workspaceDir, image, volu
 			mountSpec += ":ro"
 		}
 		args = append(args, "-v", mountSpec)
-	}
-
-	// Mount settings files if they exist (agent-specific)
-	if b.config != nil {
-		agentHome := b.config.GetAgentHome(agentType)
-
-		settingsPath := filepath.Join(agentHome, "settings.json")
-		if _, err := os.Stat(settingsPath); err == nil {
-			// Mount to agent-specific location in container
-			args = append(args, "-v", fmt.Sprintf("%s:/home/agent/%s/settings.json:ro", settingsPath, configDir))
-		}
-
-		settingsLocalPath := filepath.Join(agentHome, "settings.local.json")
-		if _, err := os.Stat(settingsLocalPath); err == nil {
-			args = append(args, "-v", fmt.Sprintf("%s:/home/agent/%s/settings.local.json:ro", settingsLocalPath, configDir))
-		}
 	}
 
 	// Add the image

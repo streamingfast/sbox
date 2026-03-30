@@ -11,9 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Add `sbox backend` command group (`list`, `set`, `show`) to manage the default container backend globally, mirroring the existing `sbox agent` command group.
 - Add `default_backend` and `default_agent` keys to `sbox config` for viewing and setting defaults via the config command.
 
+### Changed
+
+- Replace direct bind-mounts of `settings.json`/`settings.local.json` (both container and sandbox backends) with a copy-merge approach: host settings are copied to `.sbox/` with bypass-permissions enforced, then merged into the sandbox agent home on startup. Sandbox-side changes (e.g. model, theme) are preserved across restarts while host-side updates (e.g. MCP servers) are applied on each run.
+
 ### Fixed
 
 - Fix `sbox info` showing `claude` in docker sandbox create command regardless of the configured agent. Now correctly displays the resolved agent binary (e.g. `opencode`).
+- Fix container backend not forwarding `TERM` and `COLORTERM` env vars from host, causing incorrect colors and broken ANSI links compared to sandbox mode.
+- Fix container backend mounting `settings.json` and `settings.local.json` as read-only, causing `EROFS` errors when the agent tries to modify settings (e.g. setting effort level).
 
 ## v1.6.0
 
