@@ -39,26 +39,33 @@ Additional tools may be available depending on configured profiles.
 - **Network restrictions**: Some external services may be blocked by firewall
 - **Resource limits**: MicroVM has allocated CPU/memory limits
 
-### Important: Protected Directories
+### The `.sbox/` Directory
 
-- **`.sbox/` directory is READ-ONLY**: This directory is managed by sbox for configuration, caching, and state management. Never write files to `.sbox/` - your changes may be overwritten or cause issues.
+`.sbox/` is a **bidirectional exchange directory** between the host and the sandbox. Both sides can read and write it — it is not read-only.
 
-### Temporary Files & Cloned Repositories
+**Host → sandbox** (the user places files here for you to use):
+- Screenshots, design mockups, or other reference images
+- Files needed during active development that are transient by nature
 
-When you need to clone repositories or download files for temporary reference (e.g., to read documentation, compare implementations, or run one-off scripts):
+**Sandbox → host** (you may write here when it makes sense):
+- A library repository cloned in order to investigate or fix a bug that is in a dependency. In this scenario, placing it under `.sbox/` is legitimate so the user can inspect or continue work on it from the host.
 
-- **Use `/tmp/` or a subdirectory**: Clone to `/tmp/my-reference-repo/` instead of the workspace
-- **Avoid cluttering the workspace**: The workspace should only contain project-relevant files
-- **Clean up when done**: Remove temporary files after use to free disk space
+**Do NOT use `.sbox/` for:**
+- Temporary log output, scratch files, or test binaries
+- Repositories cloned purely for reference or one-off testing (use `/tmp/` instead)
+- Any file that is not meaningfully shared between you and the user
+
+### Temporary Files
+
+For anything that is only needed by you and has no value to the user on the host side, use `/tmp/` or any other directory you own:
 
 ```bash
-# Good: Clone reference repo to temp directory
+# Clone a reference repo temporarily — clean up when done
 git clone --depth 1 https://github.com/example/repo.git /tmp/reference-repo
 cat /tmp/reference-repo/README.md
 rm -rf /tmp/reference-repo
 
-# Bad: Cloning into workspace pollutes project
-git clone https://github.com/example/repo.git ./reference-repo  # Don't do this
+# Avoid writing ephemeral files into the workspace or .sbox/
 ```
 
 ## Persistence

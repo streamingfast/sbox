@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- Clarify `.sbox/` directory purpose in both backend instruction files: it is a bidirectional host↔sandbox exchange directory, not read-only. Document what belongs there (user uploads, dependency repos being fixed) vs what does not (temporary logs, reference clones, scratch files).
 - Replace direct bind-mounts of `settings.json`/`settings.local.json` (both container and sandbox backends) with a copy-merge approach: host settings are copied to `.sbox/` with bypass-permissions enforced, then merged into the sandbox agent home on startup. Sandbox-side changes (e.g. model, theme) are preserved across restarts while host-side updates (e.g. MCP servers) are applied on each run.
 
 ### Fixed
