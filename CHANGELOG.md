@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## v1.7.1
+
+### Fixed
+
+* Fixed image building mismatch between Golang version and Docker build binary version.
+
 ## v1.7.0
 
 ### Added
