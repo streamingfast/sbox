@@ -190,14 +190,6 @@ func (b *ContainerBackend) buildRunArgs(containerName, workspaceDir, image, volu
 	// Set workspace env var (used by entrypoint)
 	args = append(args, "-e", fmt.Sprintf("WORKSPACE_DIR=%s", workspaceDir))
 
-	// Forward terminal capabilities from host to preserve colors and ANSI links
-	if term := os.Getenv("TERM"); term != "" {
-		args = append(args, "-e", "TERM="+term)
-	}
-	if colorterm := os.Getenv("COLORTERM"); colorterm != "" {
-		args = append(args, "-e", "COLORTERM="+colorterm)
-	}
-
 	// Mount SSH directory if it exists (read-only)
 	homeDir, err := os.UserHomeDir()
 	if err == nil {

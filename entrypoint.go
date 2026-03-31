@@ -1554,6 +1554,7 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 
 	// Prepare and write environment variables
 	resolvedEnvs := resolveEnvs(globalEnvs, projectEnvs, sboxFileEnvs)
+	resolvedEnvs = addTerminalEnvs(resolvedEnvs)
 	if err := WriteEntrypointEnv(workspaceDir, resolvedEnvs); err != nil {
 		return fmt.Errorf("failed to write env file: %w", err)
 	}
@@ -1910,6 +1911,28 @@ func resolveEnvs(globalEnvs, projectEnvs, sboxFileEnvs []string) []string {
 	}
 
 	return resolved
+}
+
+// addTerminalEnvs appends terminal-capability env vars from the host if not already present in envs.
+// These are needed for proper TUI rendering and OSC 8 hyperlink support (e.g. clickable URLs).
+// Written to .sbox/env so they're picked up by loadEntrypointEnv on every run, including
+// existing containers that were created before these vars were added.
+func addTerminalEnvs(envs []string) []string {
+	configured := make(map[string]bool, len(envs))
+	for _, env := range envs {
+		if idx := strings.Index(env, "="); idx > 0 {
+			configured[env[:idx]] = true
+		}
+	}
+	for _, name := range []string{"TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"} {
+		if configured[name] {
+			continue
+		}
+		if value := os.Getenv(name); value != "" {
+			envs = append(envs, name+"="+value)
+		}
+	}
+	return envs
 }
 
 // SaveAgentCache saves the agent's config state to .sbox/ for persistence across recreations.

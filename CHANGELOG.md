@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+### Fixed
+
+- Fix terminal env vars (`TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`) not being forwarded to existing containers, causing broken TUI rendering and non-functional OSC 8 hyperlinks (Cmd+click on URLs). The previous approach set them via `docker run -e` flags which only apply at container creation time. They are now written to `.sbox/env` on every run and loaded by the entrypoint via `loadEntrypointEnv`, making them available to both Claude and OpenCode regardless of whether the container is new or pre-existing.
+
 ## v1.7.1
 
 ### Fixed
