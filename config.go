@@ -107,6 +107,17 @@ type SboxFileConfig struct {
 	// LoopConfirmations overrides the number of consecutive goal completions
 	// required before `sbox loop` considers the goal truly achieved.
 	LoopConfirmations int `yaml:"loop_confirmations"`
+
+	// OpenCode contains settings specific to the OpenCode agent.
+	OpenCode *OpenCodeFileConfig `yaml:"opencode,omitempty"`
+}
+
+// OpenCodeFileConfig contains sbox.yaml settings specific to the OpenCode agent.
+type OpenCodeFileConfig struct {
+	// LoadClaudeSkills enables converting installed Claude Code plugin SKILL.md files
+	// into OpenCode rules files at startup.
+	// Skills are written to ~/.config/opencode/rules/ as always-on context.
+	LoadClaudeSkills bool `yaml:"load_claude_skills"`
 }
 
 // SboxFileLocation contains info about a loaded sbox.yaml file

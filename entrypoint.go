@@ -108,8 +108,18 @@ type EntrypointConfig struct {
 	MaxIterations     int  `yaml:"max_iterations,omitempty"`
 	LoopConfirmations int  `yaml:"loop_confirmations,omitempty"`
 
+	// OpenCode contains settings specific to the OpenCode agent.
+	OpenCode *OpenCodeSettings `yaml:"opencode,omitempty"`
+
 	// Developer contains developer-oriented settings for debugging and development
 	Developer *DeveloperSettings `yaml:"developer,omitempty"`
+}
+
+// OpenCodeSettings contains entrypoint settings specific to the OpenCode agent.
+type OpenCodeSettings struct {
+	// LoadClaudeSkills enables converting installed Claude Code plugin SKILL.md files
+	// into OpenCode rules at startup.
+	LoadClaudeSkills bool `yaml:"load_claude_skills,omitempty"`
 }
 
 // DeveloperSettings contains developer-oriented settings for debugging and development.
@@ -634,6 +644,15 @@ func RunEntrypoint(args []string) error {
 			elog.Warn("failed to restore opencode share cache", "error", err)
 			// Non-fatal - continue anyway
 		}
+
+		// Convert Claude Code plugin SKILL.md files to OpenCode rules (opt-in).
+		// Done after cache restore so generated rules always overwrite any stale cached versions.
+		if config.OpenCode != nil && config.OpenCode.LoadClaudeSkills {
+			if err := setupOpencodeSkills(workspaceDir, agentHome); err != nil {
+				elog.Warn("failed to setup opencode skills from claude plugins", "error", err)
+				// Non-fatal - continue anyway
+			}
+		}
 	}
 
 	// Load environment variables
@@ -795,6 +814,84 @@ func setupAgents(workspaceDir string, agentType AgentType, agents []EntrypointAg
 	}
 
 	return nil
+}
+
+// setupOpencodeSkills converts Claude Code plugin SKILL.md files into OpenCode rules files.
+// OpenCode rules are always-on markdown files in ~/.config/opencode/rules/ that are included
+// in the system prompt automatically, bridging Claude Code's on-demand skill concept to OpenCode.
+//
+// For each installed plugin, skill files at .sbox/plugins/<publisher>/<plugin>/<ver>/skills/<skill>/SKILL.md
+// are stripped of their YAML frontmatter and written to <agentHome>/rules/<plugin>-<skill>.md.
+// !command interpolation in the skill body is left as-is for the agent to handle.
+func setupOpencodeSkills(workspaceDir string, agentHome string) error {
+	pluginsDir := filepath.Join(workspaceDir, ".sbox", "claude-plugins")
+	rulesDir := filepath.Join(agentHome, "rules")
+
+	if err := os.MkdirAll(rulesDir, 0755); err != nil {
+		return fmt.Errorf("failed to create opencode rules directory: %w", err)
+	}
+
+	// Pattern: <publisher>/<plugin-name>/<version>/skills/<skill-name>/SKILL.md
+	pattern := filepath.Join(pluginsDir, "*", "*", "*", "skills", "*", "SKILL.md")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("failed to glob skill files: %w", err)
+	}
+
+	count := 0
+	for _, skillPath := range matches {
+		rel, err := filepath.Rel(pluginsDir, skillPath)
+		if err != nil {
+			continue
+		}
+		// parts: [publisher, plugin-name, version, "skills", skill-name, "SKILL.md"]
+		parts := strings.SplitN(rel, string(filepath.Separator), 7)
+		if len(parts) < 6 {
+			continue
+		}
+		pluginName := parts[1]
+		skillName := parts[4]
+
+		content, err := os.ReadFile(skillPath)
+		if err != nil {
+			zlog.Warn("failed to read skill file, skipping", zap.String("path", skillPath), zap.Error(err))
+			continue
+		}
+
+		ruleFileName := pluginName + "-" + skillName + ".md"
+		rulePath := filepath.Join(rulesDir, ruleFileName)
+		if err := os.WriteFile(rulePath, []byte(stripFrontmatter(string(content))), 0644); err != nil {
+			zlog.Warn("failed to write opencode rule file, skipping", zap.String("path", rulePath), zap.Error(err))
+			continue
+		}
+
+		count++
+		elog.Info("converted skill to opencode rule", "plugin", pluginName, "skill", skillName, "rule", ruleFileName)
+	}
+
+	elog.Info("setup opencode skills as rules", "count", count, "rules_dir", rulesDir)
+	return nil
+}
+
+// stripFrontmatter removes YAML frontmatter (the leading ---...--- block) from markdown content.
+// Returns the content unchanged if no frontmatter is present.
+func stripFrontmatter(content string) string {
+	if !strings.HasPrefix(content, "---") {
+		return content
+	}
+	rest := content[3:]
+	if strings.HasPrefix(rest, "\n") {
+		rest = rest[1:]
+	}
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return content
+	}
+	body := rest[end+4:]
+	if strings.HasPrefix(body, "\n") {
+		body = body[1:]
+	}
+	return body
 }
 
 // SboxDevBinaryEnvVar is set when running via the dev override binary to prevent
@@ -1492,6 +1589,12 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 		LoopConfirmations: opts.LoopConfirmations,
 	}
 
+	if opts.SboxFile != nil && opts.SboxFile.Config != nil && opts.SboxFile.Config.OpenCode != nil {
+		entrypointConfig.OpenCode = &OpenCodeSettings{
+			LoadClaudeSkills: opts.SboxFile.Config.OpenCode.LoadClaudeSkills,
+		}
+	}
+
 	// Copy developer settings from backend options
 	if opts.StartupDelay != nil {
 		entrypointConfig.Developer = &DeveloperSettings{
@@ -1506,7 +1609,7 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 		zap.String("agent_home", agentHome))
 
 	// Copy plugins
-	plugins, err := preparePlugins(agentHome, sboxDir)
+	plugins, err := preparePlugins(agentHome, sboxDir, "plugins")
 	if err != nil {
 		zlog.Warn("failed to prepare plugins", zap.Error(err))
 		// Continue - plugins are optional
@@ -1521,6 +1624,16 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 		// Continue - agents are optional
 	} else {
 		entrypointConfig.Agents = agents
+	}
+
+	// When running OpenCode with LoadClaudeSkills, also copy Claude Code plugins to
+	// .sbox/claude-plugins/ so the entrypoint can convert SKILL.md files to OpenCode rules.
+	if agent == AgentOpenCode && entrypointConfig.OpenCode != nil && entrypointConfig.OpenCode.LoadClaudeSkills {
+		claudeHome := config.GetAgentHome(AgentClaude)
+		if _, err := preparePlugins(claudeHome, sboxDir, "claude-plugins"); err != nil {
+			zlog.Warn("failed to prepare claude plugins for opencode skills", zap.Error(err))
+			// Non-fatal - continue anyway
+		}
 	}
 
 	// Prepare Claude settings files
@@ -1567,8 +1680,8 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 	return nil
 }
 
-// preparePlugins copies installed plugins to .sbox/plugins/
-func preparePlugins(claudeHome, sboxDir string) ([]EntrypointPlugin, error) {
+// preparePlugins copies installed plugins to .sbox/<subDir>/
+func preparePlugins(claudeHome, sboxDir, subDir string) ([]EntrypointPlugin, error) {
 	pluginsJSONPath := filepath.Join(claudeHome, "plugins", "installed_plugins.json")
 	hostCachePath := filepath.Join(claudeHome, "plugins", "cache")
 
@@ -1615,7 +1728,7 @@ func preparePlugins(claudeHome, sboxDir string) ([]EntrypointPlugin, error) {
 			relativePath = strings.TrimPrefix(relativePath, "/")
 
 			// Destination path in .sbox
-			dstPath := filepath.Join(sboxDir, "plugins", relativePath)
+			dstPath := filepath.Join(sboxDir, subDir, relativePath)
 
 			zlog.Debug("copying plugin",
 				zap.String("plugin", pluginName),
@@ -1632,7 +1745,7 @@ func preparePlugins(claudeHome, sboxDir string) ([]EntrypointPlugin, error) {
 
 			plugins = append(plugins, EntrypointPlugin{
 				Name:           pluginName,
-				Path:           filepath.Join("plugins", relativePath),
+				Path:           filepath.Join(subDir, relativePath),
 				Version:        entry.Version,
 				PackageVersion: entry.GitCommitSha,
 			})

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+### Added
+
+- Add `load_claude_skills` setting in `sbox.yaml` (opt-in, default off). When enabled for OpenCode sessions, installed Claude Code plugin `SKILL.md` files are automatically converted to OpenCode rules at startup and written to `~/.config/opencode/rules/`. This bridges Claude Code's on-demand skill concept to OpenCode's always-on rules system. `!command` interpolation in skill bodies is preserved as-is for the agent to handle.
+
 ### Fixed
 
 - Fix terminal env vars (`TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`) not being forwarded to existing containers, causing broken TUI rendering and non-functional OSC 8 hyperlinks (Cmd+click on URLs). The previous approach set them via `docker run -e` flags which only apply at container creation time. They are now written to `.sbox/env` on every run and loaded by the entrypoint via `loadEntrypointEnv`, making them available to both Claude and OpenCode regardless of whether the container is new or pre-existing.
