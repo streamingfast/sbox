@@ -1668,6 +1668,7 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 	// Prepare and write environment variables
 	resolvedEnvs := resolveEnvs(globalEnvs, projectEnvs, sboxFileEnvs)
 	resolvedEnvs = addTerminalEnvs(resolvedEnvs)
+	resolvedEnvs = addGitEnvs(resolvedEnvs)
 	if err := WriteEntrypointEnv(workspaceDir, resolvedEnvs); err != nil {
 		return fmt.Errorf("failed to write env file: %w", err)
 	}
@@ -2046,6 +2047,52 @@ func addTerminalEnvs(envs []string) []string {
 		}
 	}
 	return envs
+}
+
+// addGitEnvs injects the host's git user identity into the sandbox via git's env-based config
+// injection (GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n, available since git 2.31).
+// These vars are additive — they don't overwrite any config the agent already has inside the
+// sandbox. Only non-empty values read from the host's global git config are forwarded.
+// If GIT_CONFIG_COUNT is already present in envs it is left untouched (user has their own setup).
+func addGitEnvs(envs []string) []string {
+	for _, env := range envs {
+		if strings.HasPrefix(env, "GIT_CONFIG_COUNT=") {
+			return envs
+		}
+	}
+
+	name := gitConfigGlobal("user.name")
+	email := gitConfigGlobal("user.email")
+
+	var keys, values []string
+	if name != "" {
+		keys = append(keys, "user.name")
+		values = append(values, name)
+	}
+	if email != "" {
+		keys = append(keys, "user.email")
+		values = append(values, email)
+	}
+	if len(keys) == 0 {
+		return envs
+	}
+
+	envs = append(envs, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(keys)))
+	for i, k := range keys {
+		envs = append(envs, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, k))
+		envs = append(envs, fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, values[i]))
+	}
+	return envs
+}
+
+// gitConfigGlobal reads a single value from the host's global git configuration.
+// Returns an empty string if the key is not set or git is unavailable.
+func gitConfigGlobal(key string) string {
+	out, err := exec.Command("git", "config", "--global", key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // SaveAgentCache saves the agent's config state to .sbox/ for persistence across recreations.

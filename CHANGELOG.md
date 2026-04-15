@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - Add `load_claude_skills` setting in `sbox.yaml` (opt-in, default off). When enabled for OpenCode sessions, installed Claude Code plugin `SKILL.md` files are automatically converted to OpenCode rules at startup and written to `~/.config/opencode/rules/`. This bridges Claude Code's on-demand skill concept to OpenCode's always-on rules system. `!command` interpolation in skill bodies is preserved as-is for the agent to handle.
+- Forward host git identity (`user.name`, `user.email`) into the sandbox automatically. Values are read from the host's global git config and injected via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` env vars (git 2.31+), making them available to the agent without touching `~/.gitconfig`. Skipped silently if not set on the host, or if `GIT_CONFIG_COUNT` is already present in the environment.
 
 ### Fixed
 
