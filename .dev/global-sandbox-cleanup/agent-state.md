@@ -2,7 +2,7 @@
 
 ## Status
 
-Complete. Build passes, all tests pass.
+Complete. Build passes, all tests pass. Feedback 2 UI rework also complete.
 
 ## Implementation Plan
 
@@ -52,6 +52,14 @@ Types and functions:
 - [x] Register `PruneCommand` in `cmd/sbox/main.go`
 - [x] Run tests and build
 - [x] Update CHANGELOG.md
+
+## Feedback 2 — UI Rework (2026-04-24)
+
+- [x] Create `stylex/stylex.go` package (copied from firehose-core)
+- [x] Update `FindPruneCandidates` to return `(candidates, kept []PruneCandidate, err error)`
+- [x] Rewrite `cmd/sbox/prune.go` output with three lipgloss table sections (Missing / Too old / Keeping)
+- [x] `go mod tidy` to promote `charmbracelet/lipgloss` and `go-isatty` to direct deps
+- [x] All tests pass, build succeeds
 
 ## Notes
 

@@ -2,13 +2,17 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	. "github.com/streamingfast/cli"
 	"github.com/streamingfast/sbox"
+	"github.com/streamingfast/sbox/stylex"
 )
 
 // PruneCommand is the top-level `sbox prune` group command.
@@ -81,86 +85,141 @@ func pruneSandboxes(cmd *cobra.Command) error {
 	keep, _ := cmd.Flags().GetInt("keep")
 	force, _ := cmd.Flags().GetBool("force")
 
-	candidates, err := sbox.FindPruneCandidates(sbox.PruneOptions{Keep: keep})
+	candidates, kept, err := sbox.FindPruneCandidates(sbox.PruneOptions{Keep: keep})
 	if err != nil {
 		return fmt.Errorf("failed to find prune candidates: %w", err)
 	}
 
-	if len(candidates) == 0 {
+	w := cmd.OutOrStdout()
+
+	if len(candidates) == 0 && len(kept) == 0 {
 		if force {
-			cmd.Println("Nothing to prune.")
+			fmt.Fprintln(w, "Nothing to prune.")
 		} else {
-			cmd.Printf("Nothing to prune (keeping %d most recently used).\n", keep)
+			fmt.Fprintf(w, "Nothing to prune (keeping %d most recently used).\n", keep)
 		}
 		return nil
 	}
 
-	// Print header.
 	if !force {
-		cmd.Printf("sbox prune (dry-run — use --force to actually delete)\n\n")
-		cmd.Printf("Would prune %d sandbox(es):\n\n", len(candidates))
-	} else {
-		cmd.Printf("Pruning %d sandbox(es):\n\n", len(candidates))
+		fmt.Fprintln(w, stylex.Note("sbox prune (dry-run — use --force to actually delete)"))
+		fmt.Fprintln(w)
 	}
 
-	// Compute column widths.
-	maxName := len("SANDBOX")
-	maxPath := len("WORKSPACE")
+	// Split candidates into stale (workspace missing) and old (too old).
+	var stale, old []sbox.PruneCandidate
 	for _, c := range candidates {
-		name := cmp(c.SandboxName, "(no sandbox)")
-		if len(name) > maxName {
-			maxName = len(name)
-		}
-		path := cmp(c.WorkspacePath, "(unknown)")
-		if len(path) > maxPath {
-			maxPath = len(path)
+		if c.WorkspaceMissing {
+			stale = append(stale, c)
+		} else {
+			old = append(old, c)
 		}
 	}
 
-	// Header row.
-	cmd.Printf("  %-*s  %-*s  %-19s  %s\n",
-		maxName, "SANDBOX",
-		maxPath, "WORKSPACE",
-		"LAST USED",
-		"REASON")
-	cmd.Printf("  %s  %s  %s  %s\n",
-		strings.Repeat("-", maxName),
-		strings.Repeat("-", maxPath),
-		strings.Repeat("-", 19),
-		strings.Repeat("-", 30))
-
-	for _, c := range candidates {
-		name := cmp(c.SandboxName, "(no sandbox)")
-		path := cmp(c.WorkspacePath, "(unknown)")
-		lastUsed := formatLastUsed(c.LastUsed)
-		cmd.Printf("  %-*s  %-*s  %-19s  %s\n",
-			maxName, name,
-			maxPath, path,
-			lastUsed,
-			c.Reason)
+	pruneVerb := "Pruning"
+	if force {
+		pruneVerb = "Pruned"
 	}
 
-	cmd.Println()
+	// Render stale section.
+	if len(stale) > 0 {
+		printPruneSection(w, fmt.Sprintf("%s %d sandbox(es) | Missing", pruneVerb, len(stale)), stale, force)
+	}
+
+	// Render too-old section.
+	if len(old) > 0 {
+		printPruneSection(w, fmt.Sprintf("%s %d sandbox(es) | Too old", pruneVerb, len(old)), old, force)
+	}
+
+	// Render kept section.
+	if len(kept) > 0 {
+		printKeptSection(w, kept)
+	}
 
 	if !force {
-		cmd.Printf("Keeping %d most recently used sandbox(es).\n", keep)
-		cmd.Println("Run with --force to delete.")
+		fmt.Fprintln(w, stylex.Note("Run with --force to delete."))
 		return nil
 	}
 
 	// Perform deletion.
 	pruneErrs := sbox.PruneAll(candidates)
 	if len(pruneErrs) == 0 {
-		cmd.Printf("\nSuccessfully pruned %d sandbox(es).\n", len(candidates))
+		fmt.Fprintf(w, "\nSuccessfully pruned %d sandbox(es).\n", len(candidates))
 	} else {
-		cmd.Printf("\nPruned %d sandbox(es) with %d error(s):\n", len(candidates)-len(pruneErrs), len(pruneErrs))
+		fmt.Fprintf(w, "\nPruned %d sandbox(es) with %d error(s):\n", len(candidates)-len(pruneErrs), len(pruneErrs))
 		for _, pe := range pruneErrs {
-			cmd.Printf("  ERROR: %s: %v\n", pe.Candidate.SandboxName, pe.Err)
+			fmt.Fprintf(w, "  ERROR: %s: %v\n", pe.Candidate.SandboxName, pe.Err)
 		}
 		return fmt.Errorf("prune completed with errors")
 	}
 
 	return nil
+}
+
+// printPruneSection renders a titled table section for prune candidates.
+func printPruneSection(w io.Writer, title string, candidates []sbox.PruneCandidate, performed bool) {
+	fmt.Fprintln(w, stylex.Header(title))
+	fmt.Fprintln(w, stylex.Dim(strings.Repeat("─", 40)))
+
+	var rows [][]string
+	for _, c := range candidates {
+		rows = append(rows, []string{
+			cmp(c.SandboxName, "(no sandbox)"),
+			cmp(c.WorkspacePath, "(unknown)"),
+			formatLastUsed(c.LastUsed),
+		})
+	}
+
+	t := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(stylex.DimStyle).
+		Headers(
+			stylex.Header("Sandbox"),
+			stylex.Header("Workspace"),
+			stylex.Header("Last Used"),
+		).
+		Rows(rows...).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return stylex.HeaderStyle
+			}
+			return lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
+		})
+
+	fmt.Fprintln(w, t.String())
+}
+
+// printKeptSection renders a titled table section for kept sandboxes.
+func printKeptSection(w io.Writer, kept []sbox.PruneCandidate) {
+	fmt.Fprintln(w, stylex.Header(fmt.Sprintf("Keeping %d sandbox(es)", len(kept))))
+	fmt.Fprintln(w, stylex.Dim(strings.Repeat("─", 40)))
+
+	var rows [][]string
+	for _, c := range kept {
+		rows = append(rows, []string{
+			cmp(c.SandboxName, "(no sandbox)"),
+			cmp(c.WorkspacePath, "(unknown)"),
+			formatLastUsed(c.LastUsed),
+		})
+	}
+
+	t := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(stylex.DimStyle).
+		Headers(
+			stylex.Header("Sandbox"),
+			stylex.Header("Workspace"),
+			stylex.Header("Last Used"),
+		).
+		Rows(rows...).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return stylex.HeaderStyle
+			}
+			return lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
+		})
+
+	fmt.Fprintln(w, t.String())
 }
 
 // cmp returns s if non-empty, otherwise fallback.

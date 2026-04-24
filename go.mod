@@ -5,7 +5,10 @@ go 1.26
 require (
 	charm.land/glamour/v2 v2.0.0
 	charm.land/lipgloss/v2 v2.0.1
+	github.com/charmbracelet/lipgloss v1.0.0
+	github.com/destel/rill v0.8.1
 	github.com/kaptinlin/jsonmerge v0.2.13
+	github.com/mattn/go-isatty v0.0.20
 	github.com/spf13/cobra v1.1.3
 	github.com/spf13/pflag v1.0.5
 	github.com/streamingfast/cli v0.0.4-0.20260316180044-4d2456dc1f28
@@ -22,7 +25,6 @@ require (
 	github.com/blendle/zapdriver v1.3.1 // indirect
 	github.com/bobg/go-generics/v3 v3.4.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.2 // indirect
-	github.com/charmbracelet/lipgloss v1.0.0 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20251205161215-1948445e3318 // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/exp/slice v0.0.0-20250327172914-2fdc97757edf // indirect
@@ -33,7 +35,6 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/destel/rill v0.8.1 // indirect
 	github.com/dlclark/regexp2 v1.11.0 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20251027170946-4849db3c2f7e // indirect
@@ -49,7 +50,6 @@ require (
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/manifoldco/promptui v0.8.0 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/mitchellh/go-testing-interface v1.14.1 // indirect

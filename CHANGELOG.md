@@ -18,10 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - Remove plugin forwarding from the host backend. When running with `--backend=host` the agent is already on the host where plugins live natively in its own config directory (e.g. `~/.claude/plugins`). Passing redundant `--plugin-dir` flags is no longer needed and has been removed.
+- Rework `sbox prune` output into three styled lipgloss table sections — "Pruning N sandbox(es) | Missing", "Pruning N sandbox(es) | Too old", and "Keeping N sandbox(es)" — each only shown when non-empty. Uses the new `stylex/` package and `github.com/charmbracelet/lipgloss/table` for consistent terminal styling.
 
 ### Fixed
 
 - Fix terminal env vars (`TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`) not being forwarded to existing containers, causing broken TUI rendering and non-functional OSC 8 hyperlinks (Cmd+click on URLs). The previous approach set them via `docker run -e` flags which only apply at container creation time. They are now written to `.sbox/env` on every run and loaded by the entrypoint via `loadEntrypointEnv`, making them available to both Claude and OpenCode regardless of whether the container is new or pre-existing.
+- Fix sandbox firewall instructions inside the sandbox injecting the wrong sandbox name (e.g. `firehose-core` instead of `sbox-opencode-firehose-core`). The sandbox context MD now uses a `{{SBOX_SANDBOX_NAME}}` placeholder that is substituted with the actual Docker sandbox name at prep time. The command is also wrapped in backticks for clean copy-paste.
 
 ## v1.7.1
 

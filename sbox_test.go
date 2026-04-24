@@ -135,7 +135,7 @@ func TestConcatenateMDFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(file2, []byte("Content 2"), 0644))
 
 	// Test concatenation with sandbox backend
-	result, err := ConcatenateMDFiles([]string{file1, file2}, BackendSandbox)
+	result, err := ConcatenateMDFiles([]string{file1, file2}, BackendSandbox, "")
 	require.NoError(t, err)
 	assert.NotEmpty(t, result)
 
@@ -157,7 +157,7 @@ func TestConcatenateMDFiles_ContainerBackend(t *testing.T) {
 	require.NoError(t, os.WriteFile(file1, []byte("Content 1"), 0644))
 
 	// Test concatenation with container backend
-	result, err := ConcatenateMDFiles([]string{file1}, BackendContainer)
+	result, err := ConcatenateMDFiles([]string{file1}, BackendContainer, "")
 	require.NoError(t, err)
 
 	// Should have container backend context
@@ -167,7 +167,7 @@ func TestConcatenateMDFiles_ContainerBackend(t *testing.T) {
 }
 
 func TestConcatenateMDFiles_Empty(t *testing.T) {
-	result, err := ConcatenateMDFiles([]string{}, BackendSandbox)
+	result, err := ConcatenateMDFiles([]string{}, BackendSandbox, "")
 	require.NoError(t, err)
 
 	// Even with no files, we should have the embedded backend context
@@ -328,7 +328,7 @@ func TestPrepareMDForSandbox(t *testing.T) {
 	require.NoError(t, os.WriteFile(claudeMD, []byte("# Test CLAUDE.md\nSome content"), 0644))
 
 	// Test with sandbox backend
-	outputPath, err := PrepareMDForSandbox(workspaceDir, BackendSandbox)
+	outputPath, err := PrepareMDForSandbox(workspaceDir, BackendSandbox, "")
 	require.NoError(t, err)
 
 	// Check output file exists
@@ -366,7 +366,7 @@ func TestPrepareMDForSandbox_ContainerBackend(t *testing.T) {
 	require.NoError(t, os.WriteFile(claudeMD, []byte("# Test CLAUDE.md\nSome content"), 0644))
 
 	// Test with container backend
-	outputPath, err := PrepareMDForSandbox(workspaceDir, BackendContainer)
+	outputPath, err := PrepareMDForSandbox(workspaceDir, BackendContainer, "")
 	require.NoError(t, err)
 
 	// Read and verify content

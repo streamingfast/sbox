@@ -2,17 +2,31 @@
 
 Sandboxes take a lot of space. We need a global way to clean up last-used sandboxes.
 
-## Feedback 1
+## Feedback 2
 
-- `for _, proj := range projects {`
+- `prune UI`
 
-  Let's explore multiple projects concurrently 2 * CPU at a time. Use https://github.com/destel/rill for making the concurrency easier.
+ I would try in sections instead of a big table. Also, we should see a section for those kept. Let's copy https://github.com/streamingfast/firehose-core/blob/develop/cmd/tools/stylex/stylex.go to a stylex/ package in sbox so we have the same coloring sharing. Also for tables rendering, and use table pattern from https://github.com/streamingfast/streamingfast-comparator/blob/master/analyzer_report.go to manage/control the different tables.
 
-  Iteration should be done using for/loop and ToSeq2 https://github.com/destel/rill#go-123-iterators
+  Questions before I consider the spec complete:
 
-- `sbox prune`
+  > 1. Comparator table pattern — can you describe what specific pattern from that file you want? Or point
+  me to an alternative location? Does it relate to how column widths are calculated, or how headers are
+  styled?
 
-   Let's actually have sbox prune <all|sandbox> where for now they are equivalent in behavior since there is only one but enable future extension, code should already be split to prepare for future extension.
+  Yes here https://github.com/streamingfast/streamingfast-comparator/blob/master/analyzer_report.go#L390C1-L408C1
+
+
+  2. Color per row vs per reason — should the entire prune-candidate row be colored, or only the reason
+  column?
+
+  Let's start with only the reason column to see out if look. For too old reason, shorter it to a single or two words.
+
+  3. Column layout — same 4 columns (sandbox, workspace, last used, reason), or should the kept section
+  drop the reason column?
+
+  I think we should drop probably, it seems to me that in a "section", all reason will be the same. Will fit well with the
+  "kept" table.
 
 ### Command
 
@@ -64,18 +78,47 @@ directory location is only used as a fallback heuristic and is not strictly requ
 
 ### Output Format
 
+Three sections, each rendered as a `github.com/charmbracelet/lipgloss/table` table.
+Sections only appear if they have entries. All tables have 3 columns: Sandbox, Workspace, Last Used.
+No "Reason" column — the section title communicates the reason.
+
+Section titles use `headerStyle`, separators use `dimStyle` (40 chars).
+
 ```
-sbox prune (dry-run, use --force to actually delete)
+sbox prune (dry-run — use --force to actually delete)
 
-Would prune 3 sandboxes:
+Pruning 2 sandbox(es) | Missing
+────────────────────────────────────────
+  ┌──────────────────────────┬──────────────────────┬─────────────────────┐
+  │ Sandbox                  │ Workspace            │ Last Used           │
+  ├──────────────────────────┼──────────────────────┼─────────────────────┤
+  │ sbox-claude-myproject    │ /home/user/myproject │ 2026-01-10 00:00:00 │
+  └──────────────────────────┴──────────────────────┴─────────────────────┘
 
-  sbox-claude-myproject   /home/user/myproject   last used: 2026-01-10   reason: workspace missing
-  sbox-claude-oldwork     /home/user/oldwork     last used: 2026-02-01   reason: stale (outside keep=5)
-  sbox-claude-abandoned   /home/user/abandoned   last used: 2026-02-15   reason: stale (outside keep=5)
+Pruning 1 sandbox(es) | Too old
+────────────────────────────────────────
+  ┌──────────────────────┬──────────────────────┬─────────────────────┐
+  │ Sandbox              │ Workspace            │ Last Used           │
+  ├──────────────────────┼──────────────────────┼─────────────────────┤
+  │ sbox-claude-oldwork  │ /home/user/oldwork   │ 2026-02-01 00:00:00 │
+  └──────────────────────┴──────────────────────┴─────────────────────┘
 
-Keeping 5 most recently used sandboxes.
+Keeping 2 sandbox(es)
+────────────────────────────────────────
+  ┌──────────────────────┬──────────────────────┬─────────────────────┐
+  │ Sandbox              │ Workspace            │ Last Used           │
+  ├──────────────────────┼──────────────────────┼─────────────────────┤
+  │ sbox-claude-recent   │ /home/user/recent    │ 2026-04-01 00:00:00 │
+  │ sbox-claude-active   │ /home/user/active    │ 2026-04-20 00:00:00 │
+  └──────────────────────┴──────────────────────┴─────────────────────┘
+
 Run with --force to delete.
 ```
 
-When `--force` is given, same list with "Pruned" instead of "Would prune", and each line
-prefixed with what was actually deleted.
+When `--force` is given, same sections/tables but header says "Pruned N sandbox(es) | ..." instead of "Pruning".
+
+### Styling
+
+- New `stylex/` package: copy `stylex.go` from `https://github.com/streamingfast/firehose-core/blob/develop/cmd/tools/stylex/stylex.go` as-is.
+- Use `github.com/charmbracelet/lipgloss/table` (`table.New().Border().BorderStyle().Headers().Rows().StyleFunc(...)`) for all three tables.
+- Section title uses `stylex.Header(...)`, separator uses `stylex.Dim(strings.Repeat("─", 40))`.

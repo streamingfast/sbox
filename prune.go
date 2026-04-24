@@ -91,7 +91,8 @@ func (e PruneError) Error() string {
 	return fmt.Sprintf("prune %s: %v", e.Candidate.SandboxName, e.Err)
 }
 
-// FindPruneCandidates returns sandboxes that should be pruned according to opts.
+// FindPruneCandidates returns sandboxes that should be pruned according to opts,
+// along with the sandboxes that are being kept.
 //
 // The selection algorithm:
 //  1. Load all known projects from ~/.config/sbox/projects/.
@@ -100,7 +101,10 @@ func (e PruneError) Error() string {
 //  4. Among workspaces that still exist, keep the opts.Keep most recently used;
 //     the rest become candidates.
 //  5. Docker sandboxes with no corresponding project entry are also candidates.
-func FindPruneCandidates(opts PruneOptions) ([]PruneCandidate, error) {
+//
+// Returns (candidates, kept, err). candidates are sandboxes to prune; kept are
+// sandboxes being retained.
+func FindPruneCandidates(opts PruneOptions) (candidates []PruneCandidate, kept []PruneCandidate, err error) {
 	keep := opts.Keep
 	if keep <= 0 {
 		keep = 5
@@ -109,7 +113,7 @@ func FindPruneCandidates(opts PruneOptions) ([]PruneCandidate, error) {
 	// Load all known projects.
 	projects, err := ListProjects()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list projects: %w", err)
+		return nil, nil, fmt.Errorf("failed to list projects: %w", err)
 	}
 
 	// Load all Docker sandboxes.
@@ -245,16 +249,23 @@ func FindPruneCandidates(opts PruneOptions) ([]PruneCandidate, error) {
 
 	// Keep the first `keep` entries; the rest are candidates.
 	var old []PruneCandidate
+	var keptEntries []PruneCandidate
 	for i, entry := range active {
-		if i < keep {
-			continue // keep this one
-		}
-
 		sbName := ""
 		if entry.hasSb {
 			sbName = entry.sandbox.Name
 		} else if entry.info.Config != nil {
 			sbName = entry.info.Config.SandboxName
+		}
+
+		if i < keep {
+			keptEntries = append(keptEntries, PruneCandidate{
+				SandboxName:   sbName,
+				WorkspacePath: entry.info.WorkspacePath,
+				ProjectHash:   entry.info.Hash,
+				LastUsed:      entry.lastUsed,
+			})
+			continue // keep this one
 		}
 
 		reason := fmt.Sprintf("outside keep=%d most recently used", keep)
@@ -294,7 +305,7 @@ func FindPruneCandidates(opts PruneOptions) ([]PruneCandidate, error) {
 
 	// Combine: stale first, then old (sorted oldest-last-used first).
 	all := append(stale, old...)
-	return all, nil
+	return all, keptEntries, nil
 }
 
 // PruneAll removes all provided candidates and returns any errors encountered.

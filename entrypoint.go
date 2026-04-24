@@ -1591,8 +1591,13 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 		// Non-fatal — pruning will just treat this workspace as unknown age.
 	}
 
-	// Prepare merged CLAUDE.md file with backend-specific context
-	if err := prepareRules(workspaceDir, sboxDir, backend); err != nil {
+	// Prepare merged CLAUDE.md file with backend-specific context.
+	// Pass the sandbox name so that firewall command instructions use the correct name.
+	sandboxName := ""
+	if opts.ProjectConfig != nil {
+		sandboxName = opts.ProjectConfig.SandboxName
+	}
+	if err := prepareRules(workspaceDir, sboxDir, backend, sandboxName); err != nil {
 		zlog.Warn("failed to prepare rules file", zap.Error(err))
 		// Continue - rules file is optional
 	}
@@ -2305,10 +2310,11 @@ func restoreOpenCodeShareCache(workspaceDir string) error {
 
 // prepareRules uses PrepareMDForSandbox to discover and concatenate MD files,
 // then copies the result to .sbox/CLAUDE.md. These rules apply to all agent types.
-func prepareRules(workspaceDir, sboxDir string, backend BackendType) error {
+// sandboxName is substituted into backend context templates (e.g. firewall instructions).
+func prepareRules(workspaceDir, sboxDir string, backend BackendType, sandboxName string) error {
 	// Use existing function to discover and concatenate CLAUDE.md and AGENTS.md files
 	// with backend-specific context
-	srcPath, err := PrepareMDForSandbox(workspaceDir, backend)
+	srcPath, err := PrepareMDForSandbox(workspaceDir, backend, sandboxName)
 	if err != nil {
 		return fmt.Errorf("failed to prepare MD files: %w", err)
 	}

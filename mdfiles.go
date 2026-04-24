@@ -94,11 +94,21 @@ func DiscoverMDFiles(startDir string) ([]string, error) {
 // ConcatenateMDFiles reads and concatenates the specified MD files with
 // delimiters showing the source path of each file. The embedded backend-specific
 // context instructions are prepended to help Claude understand its environment.
-func ConcatenateMDFiles(files []string, backend BackendType) (string, error) {
+//
+// sandboxName is the actual Docker sandbox name for this session (e.g.
+// "sbox-opencode-firehose-core"). It is substituted for the
+// {{SBOX_SANDBOX_NAME}} placeholder in the backend context MD so that agents
+// can reference the correct sandbox name in firewall commands.
+func ConcatenateMDFiles(files []string, backend BackendType, sandboxName string) (string, error) {
 	var sb strings.Builder
 
 	// Get backend-specific context
 	contextMD := GetBackendContextMD(backend)
+
+	// Substitute the sandbox name placeholder.
+	if sandboxName != "" {
+		contextMD = strings.ReplaceAll(contextMD, "{{SBOX_SANDBOX_NAME}}", sandboxName)
+	}
 
 	// Prepend embedded backend context instructions
 	sb.WriteString("# ==================================================\n")
@@ -166,7 +176,10 @@ func ProjectHash(workspaceDir string) (string, error) {
 // PrepareMDForSandbox discovers all CLAUDE.md and AGENTS.md files in the
 // workspace directory hierarchy, concatenates them with backend-specific context,
 // and writes the result to a per-project location: ~/.config/sbox/projects/<hash>/claude.md
-func PrepareMDForSandbox(workspaceDir string, backend BackendType) (string, error) {
+//
+// sandboxName is the actual Docker sandbox name (e.g. "sbox-opencode-myproject")
+// and is used to substitute {{SBOX_SANDBOX_NAME}} in backend context templates.
+func PrepareMDForSandbox(workspaceDir string, backend BackendType, sandboxName string) (string, error) {
 	// Compute project hash
 	projectHash, err := ProjectHash(workspaceDir)
 	if err != nil {
@@ -180,7 +193,7 @@ func PrepareMDForSandbox(workspaceDir string, backend BackendType) (string, erro
 	}
 
 	// Concatenate files with backend-specific context
-	content, err := ConcatenateMDFiles(files, backend)
+	content, err := ConcatenateMDFiles(files, backend, sandboxName)
 	if err != nil {
 		return "", fmt.Errorf("failed to concatenate MD files: %w", err)
 	}

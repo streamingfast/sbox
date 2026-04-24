@@ -97,6 +97,10 @@ Options:
 --policy allow|deny    Set the default policy
 ```
 
+This sandbox's name is `{{SBOX_SANDBOX_NAME}}`. When proposing firewall commands to the user, always use the actual sandbox name and wrap the full command in backticks for easy copy-paste. For example:
+
+`docker sandbox network proxy {{SBOX_SANDBOX_NAME}} --allow-host github.com`
+
 Propose to the user the command(s) he should perform before you can retry.
 
 ## Docker Usage
