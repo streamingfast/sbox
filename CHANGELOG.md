@@ -8,11 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- Add `--backend=host` support. The host backend runs the AI agent directly on the host machine with no Docker or MicroVM isolation. Supports interactive mode, single-prompt mode, and loop mode (`sbox loop`). The `.sbox/` directory is still written for CLAUDE.md injection and env vars. `sbox stop`, `sbox shell`, and `sbox info` print a clear unsupported message with exit code 1 when the host backend is active. Using `--profile` with the host backend shows a warning that profiles are ignored.
+- Add `--backend=host` support. The host backend runs the AI agent directly on the host machine with no Docker or MicroVM isolation. Supports interactive mode, single-prompt mode, and loop mode (`sbox loop`). The `.sbox/` directory is still written for CLAUDE.md injection and env vars. `sbox shell` and `sbox info` print a clear unsupported message with exit code 1 when the host backend is active. Using `--profile` with the host backend shows a warning that profiles are ignored.
 - Add support for forwarding extra arguments to the agent binary via `--` on `sbox run` (e.g. `sbox run -- --resume <session-id>`). Arguments after `--` are passed verbatim to the agent.
-- Add `sbox prune` command to reclaim disk space by removing old and stale sandboxes. Sandboxes whose workspace directory no longer exists are always pruned; the rest are kept based on a `--keep N` (default 5) most-recently-used policy. Dry-run by default; use `--force` to actually delete. Each pruned sandbox removes the Docker sandbox, its `.sbox/` directory, and the project config entry in `~/.config/sbox/projects/`.
+- Add `sbox prune <all|sandbox>` command to reclaim disk space by removing old and stale sandboxes. Sandboxes whose workspace directory no longer exists are always pruned; the rest are kept based on a `--keep N` (default 5) most-recently-used policy. Dry-run by default; use `--force` to actually delete. Each pruned sandbox removes the Docker sandbox, its `.sbox/` directory, and the project config entry in `~/.config/sbox/projects/`. Projects are inspected concurrently (2×CPU) using `destel/rill` for faster scanning on large project lists or slow filesystems.
+- Add `sbox stop` support for the host backend. When the host backend starts an agent, its PID is recorded in `.sbox/host.pid`. `sbox stop` reads this file, sends SIGTERM to the process, and escalates to SIGKILL after 5 seconds if needed. The PID file is removed after the process exits.
 - Add `load_claude_skills` setting in `sbox.yaml` (opt-in, default off). When enabled for OpenCode sessions, installed Claude Code plugin `SKILL.md` files are automatically converted to OpenCode rules at startup and written to `~/.config/opencode/rules/`. This bridges Claude Code's on-demand skill concept to OpenCode's always-on rules system. `!command` interpolation in skill bodies is preserved as-is for the agent to handle.
 - Forward host git identity (`user.name`, `user.email`) into the sandbox automatically. Values are read from the host's global git config and injected via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` env vars (git 2.31+), making them available to the agent without touching `~/.gitconfig`. Skipped silently if not set on the host, or if `GIT_CONFIG_COUNT` is already present in the environment.
+
+### Changed
+
+- Remove plugin forwarding from the host backend. When running with `--backend=host` the agent is already on the host where plugins live natively in its own config directory (e.g. `~/.claude/plugins`). Passing redundant `--plugin-dir` flags is no longer needed and has been removed.
 
 ### Fixed
 

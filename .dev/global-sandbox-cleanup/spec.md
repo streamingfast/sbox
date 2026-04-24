@@ -2,6 +2,18 @@
 
 Sandboxes take a lot of space. We need a global way to clean up last-used sandboxes.
 
+## Feedback 1
+
+- `for _, proj := range projects {`
+
+  Let's explore multiple projects concurrently 2 * CPU at a time. Use https://github.com/destel/rill for making the concurrency easier.
+
+  Iteration should be done using for/loop and ToSeq2 https://github.com/destel/rill#go-123-iterators
+
+- `sbox prune`
+
+   Let's actually have sbox prune <all|sandbox> where for now they are equivalent in behavior since there is only one but enable future extension, code should already be split to prepare for future extension.
+
 ### Command
 
 `sbox prune`

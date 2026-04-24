@@ -11,7 +11,8 @@ import (
 	"github.com/streamingfast/sbox"
 )
 
-var PruneCommand = Command(pruneE,
+// PruneCommand is the top-level `sbox prune` group command.
+var PruneCommand = Group(
 	"prune",
 	"Remove old and stale sandboxes to reclaim disk space",
 	Description(`
@@ -31,14 +32,52 @@ var PruneCommand = Command(pruneE,
 		  1. The Docker sandbox (docker sandbox rm)
 		  2. The .sbox/ directory inside the workspace (if workspace exists)
 		  3. The project config entry in ~/.config/sbox/projects/
+
+		Use 'sbox prune all' or 'sbox prune sandbox' — both currently behave
+		identically (only one backend type is supported). Additional target
+		types may be added in future releases.
 	`),
-	Flags(func(flags *pflag.FlagSet) {
-		flags.Int("keep", 5, "Number of most-recently-used sandboxes to keep")
-		flags.Bool("force", false, "Actually delete sandboxes (default is dry-run)")
-	}),
+
+	Command(pruneAllE,
+		"all",
+		"Prune all sandbox types (currently equivalent to 'sandbox')",
+		Description(`
+			Prunes all sandbox types. Currently this is equivalent to 'sbox prune sandbox'
+			since only one backend type is supported, but the separation exists to
+			accommodate future backend types.
+		`),
+		Flags(func(flags *pflag.FlagSet) {
+			flags.Int("keep", 5, "Number of most-recently-used sandboxes to keep")
+			flags.Bool("force", false, "Actually delete sandboxes (default is dry-run)")
+		}),
+	),
+
+	Command(pruneSandboxE,
+		"sandbox",
+		"Prune Docker sandboxes based on last-used timestamps",
+		Description(`
+			Prunes Docker sandboxes whose workspace no longer exists or that have not
+			been used recently. Keeps the N most recently used sandboxes (--keep).
+		`),
+		Flags(func(flags *pflag.FlagSet) {
+			flags.Int("keep", 5, "Number of most-recently-used sandboxes to keep")
+			flags.Bool("force", false, "Actually delete sandboxes (default is dry-run)")
+		}),
+	),
 )
 
-func pruneE(cmd *cobra.Command, args []string) error {
+// pruneAllE handles `sbox prune all`.
+func pruneAllE(cmd *cobra.Command, args []string) error {
+	return pruneSandboxes(cmd)
+}
+
+// pruneSandboxE handles `sbox prune sandbox`.
+func pruneSandboxE(cmd *cobra.Command, args []string) error {
+	return pruneSandboxes(cmd)
+}
+
+// pruneSandboxes contains the shared prune logic for all target types.
+func pruneSandboxes(cmd *cobra.Command) error {
 	keep, _ := cmd.Flags().GetInt("keep")
 	force, _ := cmd.Flags().GetBool("force")
 

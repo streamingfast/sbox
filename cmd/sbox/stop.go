@@ -14,19 +14,22 @@ var StopCommand = Command(stopE,
 	"stop",
 	"Stop the running sandbox or container for this project",
 	Description(`
-		Stops the Docker sandbox or container for the current project.
-		If no sandbox/container is running, this command does nothing.
+		Stops the sandbox, container, or host agent process for the current project.
+		If nothing is running, this command does nothing.
 
 		The backend type is determined from the project's configuration
 		(sbox.yaml, project config, or global default).
 
-		With --rm, also removes the Docker sandbox/container after stopping.
-		Project configuration (profiles, envs, etc.) is preserved.
+		For the host backend, the agent PID is read from .sbox/host.pid. SIGTERM
+		is sent first; if the process does not exit within 5 seconds, SIGKILL is
+		sent. The PID file is removed after the process stops.
 
-		With --rm --all, removes the Docker sandbox/container AND all project
-		configuration data (profiles, envs, cached files). For container backend,
-		this also removes the persistence volume. Asks for confirmation before
-		proceeding.
+		With --rm, also removes the Docker sandbox/container (or cleans up .sbox/)
+		after stopping. Project configuration (profiles, envs, etc.) is preserved.
+
+		With --rm --all, removes the sandbox/container AND all project configuration
+		data (profiles, envs, cached files). For container backend, this also
+		removes the persistence volume. Asks for confirmation before proceeding.
 	`),
 	Flags(func(flags *pflag.FlagSet) {
 		flags.Bool("rm", false, "Also remove the Docker sandbox/container after stopping")
@@ -43,10 +46,6 @@ func stopE(cmd *cobra.Command, args []string) error {
 	}
 
 	zlog.Debug("resolved backend type", zap.String("backend", string(ctx.BackendType)))
-
-	if ctx.BackendType == sbox.BackendHost {
-		return fmt.Errorf("'sbox stop' is not supported for the host backend — the agent runs as a regular process; use your OS process tools to manage it")
-	}
 
 	removeSandbox, _ := cmd.Flags().GetBool("rm")
 	removeAll, _ := cmd.Flags().GetBool("all")
@@ -85,9 +84,14 @@ func stopE(cmd *cobra.Command, args []string) error {
 	}
 
 	if info != nil {
-		// For sandbox backend, ID and Name are the same, so don't show redundant ID
+		// For sandbox backend, ID and Name are the same, so don't show redundant ID.
+		// For container backend, ID is a full container ID so trim to 12 chars.
 		if info.ID != info.Name {
-			cmd.Printf("%s stopped: %s (%s)\n", ctx.BackendType.Capitalize(), info.Name, info.ID[:12])
+			displayID := info.ID
+			if len(displayID) > 12 {
+				displayID = displayID[:12]
+			}
+			cmd.Printf("%s stopped: %s (%s)\n", ctx.BackendType.Capitalize(), info.Name, displayID)
 		} else {
 			cmd.Printf("%s stopped: %s\n", ctx.BackendType.Capitalize(), info.Name)
 		}

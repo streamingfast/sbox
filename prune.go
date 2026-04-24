@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/destel/rill"
 	"go.uber.org/zap"
 )
 
@@ -138,22 +140,32 @@ func FindPruneCandidates(opts PruneOptions) ([]PruneCandidate, error) {
 		hasSb    bool
 	}
 
-	var stale []PruneCandidate
-	var active []projectEntry
+	// projectResult holds the outcome of inspecting a single project.
+	type projectResult struct {
+		staleCandidate *PruneCandidate  // non-nil if workspace is missing
+		activeEntry    *projectEntry    // non-nil if workspace exists
+		sandboxName    string           // sandbox name to mark as accounted for
+	}
 
-	for _, proj := range projects {
+	// Inspect projects concurrently (2×CPU goroutines) — stat calls can be slow on
+	// network-mounted or remote filesystems.
+	concurrency := 2 * runtime.NumCPU()
+	projectStream := rill.FromSlice(projects, nil)
+	resultStream := rill.Map(projectStream, concurrency, func(proj ProjectInfo) (projectResult, error) {
 		ws := proj.WorkspacePath
 		if ws == "" {
-			continue
+			return projectResult{}, nil
 		}
 
-		// Find associated Docker sandbox.
+		// Find associated Docker sandbox (read-only map access — safe without lock).
 		sb, hasSb := sandboxByWorkspace[ws]
 		if !hasSb && proj.Config != nil && proj.Config.SandboxName != "" {
 			sb, hasSb = sandboxByName[proj.Config.SandboxName]
 		}
+
+		res := projectResult{}
 		if hasSb {
-			accountedSandboxNames[sb.Name] = true
+			res.sandboxName = sb.Name
 		}
 
 		// Check if workspace still exists.
@@ -164,14 +176,14 @@ func FindPruneCandidates(opts PruneOptions) ([]PruneCandidate, error) {
 			} else if proj.Config != nil {
 				sbName = proj.Config.SandboxName
 			}
-			stale = append(stale, PruneCandidate{
+			res.staleCandidate = &PruneCandidate{
 				SandboxName:      sbName,
 				WorkspacePath:    ws,
 				ProjectHash:      proj.Hash,
 				Reason:           "workspace directory no longer exists",
 				WorkspaceMissing: true,
-			})
-			continue
+			}
+			return res, nil
 		}
 
 		// Read last-used timestamp.
@@ -182,12 +194,31 @@ func FindPruneCandidates(opts PruneOptions) ([]PruneCandidate, error) {
 				zap.Error(readErr))
 		}
 
-		active = append(active, projectEntry{
+		res.activeEntry = &projectEntry{
 			info:     proj,
 			lastUsed: lastUsed,
 			sandbox:  sb,
 			hasSb:    hasSb,
-		})
+		}
+		return res, nil
+	})
+
+	var stale []PruneCandidate
+	var active []projectEntry
+
+	for res, err := range rill.ToSeq2(resultStream) {
+		if err != nil {
+			zlog.Warn("error inspecting project (skipping)", zap.Error(err))
+			continue
+		}
+		if res.sandboxName != "" {
+			accountedSandboxNames[res.sandboxName] = true
+		}
+		if res.staleCandidate != nil {
+			stale = append(stale, *res.staleCandidate)
+		} else if res.activeEntry != nil {
+			active = append(active, *res.activeEntry)
+		}
 	}
 
 	// Sort active entries by last-used descending (most recent first).
