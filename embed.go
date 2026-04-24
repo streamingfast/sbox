@@ -14,6 +14,11 @@ var SandboxBackendContextMD string
 //go:embed embedded/container_backend.md
 var ContainerBackendContextMD string
 
+// HostBackendContextMD contains instructions for Claude about the host (no Docker) environment.
+//
+//go:embed embedded/host_backend.md
+var HostBackendContextMD string
+
 // GetBackendContextMD returns the appropriate context markdown for the given backend type.
 func GetBackendContextMD(backend BackendType) string {
 	switch backend {
@@ -21,6 +26,8 @@ func GetBackendContextMD(backend BackendType) string {
 		return ContainerBackendContextMD
 	case BackendSandbox:
 		return SandboxBackendContextMD
+	case BackendHost:
+		return HostBackendContextMD
 	default:
 		return SandboxBackendContextMD
 	}

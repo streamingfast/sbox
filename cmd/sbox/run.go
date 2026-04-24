@@ -14,9 +14,9 @@ import (
 
 var RunCommand = Command(runE,
 	"run",
-	"Launch Claude in Docker sandbox or container with configured mounts and profiles",
+	"Launch Claude in Docker sandbox, container, or directly on the host with configured mounts and profiles",
 	Description(`
-		Launches a Docker sandbox or container running Claude Code with:
+		Launches an AI agent running Claude Code with:
 		- Shared ~/.claude/agents and ~/.claude/plugins directories
 		- Concatenated CLAUDE.md/AGENTS.md hierarchy from parent directories
 		- Persistent credentials across sessions
@@ -26,11 +26,17 @@ var RunCommand = Command(runE,
 		Backend types:
 		- sandbox (default): Uses Docker sandbox MicroVM for enhanced isolation
 		- container: Uses standard Docker container with named volume persistence
+		- host: Runs the agent directly on the host machine (no Docker, no isolation)
 
 		Agent types:
 		- claude (default): Uses Claude Code AI agent
 		- opencode: Uses OpenCode AI agent
+
+		Extra arguments after -- are forwarded verbatim to the agent:
+
+		  sbox run -- --resume <session-id>
 	`),
+	ArbitraryArgs(),
 	Flags(func(flags *pflag.FlagSet) {
 		flags.Bool("docker-socket", false, "Mount Docker socket into sandbox/container")
 		flags.StringSlice("profile", nil, "Additional profiles to use for this session")
@@ -135,6 +141,12 @@ func runE(cmd *cobra.Command, args []string) error {
 	backendType := sbox.ResolveBackendType(backendFlag, sboxFile, projectConfig, config)
 	zlog.Debug("resolved backend type", zap.String("backend", string(backendType)))
 
+	// Warn when --profile is used with the host backend (profiles install tools inside
+	// Docker images; they have no effect when running directly on the host).
+	if backendType == sbox.BackendHost && len(profiles) > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: --profile is not supported for the host backend and will be ignored\n")
+	}
+
 	// Resolve which agent to use (CLI > sbox.yaml > project > global > default)
 	agentType := sbox.ResolveAgentType(agentFlag, sboxFile, projectConfig, config)
 	zlog.Debug("resolved agent type", zap.String("agent", string(agentType)))
@@ -215,6 +227,7 @@ func runE(cmd *cobra.Command, args []string) error {
 		Config:            config,
 		ProjectConfig:     projectConfig,
 		SboxFile:          sboxFile,
+		AgentArgs:         args,
 	}
 
 	// -1 is the default (unset), any other value means the flag was provided

@@ -13,13 +13,15 @@ const (
 	BackendSandbox BackendType = "sandbox"
 	// BackendContainer uses standard Docker containers for execution
 	BackendContainer BackendType = "container"
+	// BackendHost runs the agent directly on the host with no Docker isolation
+	BackendHost BackendType = "host"
 )
 
 // DefaultBackend is the default backend type when not specified
 const DefaultBackend = BackendSandbox
 
 // ValidBackendTypes contains all valid backend type values
-var ValidBackendTypes = []BackendType{BackendSandbox, BackendContainer}
+var ValidBackendTypes = []BackendType{BackendSandbox, BackendContainer, BackendHost}
 
 // Capitalize returns a capitalized display name for the backend type.
 func (bt BackendType) Capitalize() string {
@@ -28,6 +30,8 @@ func (bt BackendType) Capitalize() string {
 		return "Sandbox"
 	case BackendContainer:
 		return "Container"
+	case BackendHost:
+		return "Host"
 	default:
 		return string(bt)
 	}
@@ -36,7 +40,7 @@ func (bt BackendType) Capitalize() string {
 // ValidateBackend checks if a backend name is valid
 func ValidateBackend(name string) error {
 	switch BackendType(name) {
-	case BackendSandbox, BackendContainer:
+	case BackendSandbox, BackendContainer, BackendHost:
 		return nil
 	case "":
 		return nil // Empty means use default
@@ -101,6 +105,10 @@ type BackendOptions struct {
 	// StartupDelay delays agent startup inside the sandbox.
 	// nil means no delay, 0 means infinite delay, otherwise waits for the duration.
 	StartupDelay *time.Duration
+
+	// AgentArgs are extra arguments forwarded verbatim to the agent binary.
+	// Populated from positional arguments after -- on the sbox run command line.
+	AgentArgs []string
 }
 
 // Backend defines the interface for container execution backends
@@ -155,6 +163,8 @@ func GetBackend(backendType string, config *Config) (Backend, error) {
 		return NewSandboxBackend(config), nil
 	case BackendContainer:
 		return NewContainerBackend(config), nil
+	case BackendHost:
+		return NewHostBackend(config), nil
 	default:
 		return nil, fmt.Errorf("unknown backend type: %s", backendType)
 	}

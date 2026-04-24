@@ -113,6 +113,11 @@ func loopE(cmd *cobra.Command, args []string) error {
 	backendType := sbox.ResolveBackendType(backendFlag, sboxFile, projectConfig, config)
 	agentType := sbox.ResolveAgentType(agentFlag, sboxFile, projectConfig, config)
 
+	// Warn when --profile is used with the host backend (not applicable).
+	if backendType == sbox.BackendHost && len(profiles) > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: --profile is not supported for the host backend and will be ignored\n")
+	}
+
 	projectConfig.Backend = string(backendType)
 	projectConfig.Agent = string(agentType)
 
@@ -193,9 +198,12 @@ func loopE(cmd *cobra.Command, args []string) error {
 	// In loop mode the sandbox should not keep running after the loop ends
 	// (whether by completion, error, or Ctrl+C). Stop it so it doesn't
 	// continue consuming resources in the background.
-	ui.Status("Stopping sandbox after loop exit...")
-	if _, err := backend.Stop(workspaceDir, false); err != nil {
-		zlog.Warn("failed to stop sandbox after loop", zap.Error(err))
+	// Host backend has no container to stop — skip this step.
+	if backendType != sbox.BackendHost {
+		ui.Status("Stopping sandbox after loop exit...")
+		if _, err := backend.Stop(workspaceDir, false); err != nil {
+			zlog.Warn("failed to stop sandbox after loop", zap.Error(err))
+		}
 	}
 
 	return runErr

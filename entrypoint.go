@@ -108,6 +108,10 @@ type EntrypointConfig struct {
 	MaxIterations     int  `yaml:"max_iterations,omitempty"`
 	LoopConfirmations int  `yaml:"loop_confirmations,omitempty"`
 
+	// AgentArgs are extra arguments forwarded verbatim to the agent binary.
+	// Populated from positional arguments after -- on the sbox run command line.
+	AgentArgs []string `yaml:"agent_args,omitempty"`
+
 	// OpenCode contains settings specific to the OpenCode agent.
 	OpenCode *OpenCodeSettings `yaml:"opencode,omitempty"`
 
@@ -690,6 +694,12 @@ func RunEntrypoint(args []string) error {
 			time.Sleep(delay)
 			elog.Info("startup delay complete, proceeding")
 		}
+	}
+
+	// Append extra agent args forwarded from `sbox run -- ...`
+	if len(config.AgentArgs) > 0 {
+		elog.Info("appending extra agent args", "args", config.AgentArgs)
+		args = append(args, config.AgentArgs...)
 	}
 
 	// Loop mode: run the agent repeatedly until the goal is confirmed complete.
@@ -1575,6 +1585,12 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 		return fmt.Errorf("failed to create .sbox directory: %w", err)
 	}
 
+	// Record last-used timestamp for sbox prune to use.
+	if err := WriteLastUsed(workspaceDir); err != nil {
+		zlog.Warn("failed to write last-used timestamp", zap.Error(err))
+		// Non-fatal — pruning will just treat this workspace as unknown age.
+	}
+
 	// Prepare merged CLAUDE.md file with backend-specific context
 	if err := prepareRules(workspaceDir, sboxDir, backend); err != nil {
 		zlog.Warn("failed to prepare rules file", zap.Error(err))
@@ -1587,6 +1603,7 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 		LoopMode:          opts.LoopMode,
 		MaxIterations:     opts.MaxIterations,
 		LoopConfirmations: opts.LoopConfirmations,
+		AgentArgs:         opts.AgentArgs,
 	}
 
 	if opts.SboxFile != nil && opts.SboxFile.Config != nil && opts.SboxFile.Config.OpenCode != nil {

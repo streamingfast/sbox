@@ -44,6 +44,10 @@ func stopE(cmd *cobra.Command, args []string) error {
 
 	zlog.Debug("resolved backend type", zap.String("backend", string(ctx.BackendType)))
 
+	if ctx.BackendType == sbox.BackendHost {
+		return fmt.Errorf("'sbox stop' is not supported for the host backend — the agent runs as a regular process; use your OS process tools to manage it")
+	}
+
 	removeSandbox, _ := cmd.Flags().GetBool("rm")
 	removeAll, _ := cmd.Flags().GetBool("all")
 

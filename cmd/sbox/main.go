@@ -41,6 +41,7 @@ func main() {
 		BackendGroup,
 		ConfigCommand,
 		CleanCommand,
+		PruneCommand,
 		ShellCommand,
 		AuthCommand,
 		InfoCommand,

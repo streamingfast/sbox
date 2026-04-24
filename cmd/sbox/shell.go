@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	. "github.com/streamingfast/cli"
+	"github.com/streamingfast/sbox"
 	"go.uber.org/zap"
 )
 
@@ -34,6 +37,10 @@ func shellE(cmd *cobra.Command, args []string) error {
 	}
 
 	zlog.Debug("resolved backend type", zap.String("backend", string(ctx.BackendType)))
+
+	if ctx.BackendType == sbox.BackendHost {
+		return fmt.Errorf("'sbox shell' is not supported for the host backend — the agent runs directly on the host; just open a new terminal")
+	}
 
 	return ctx.Backend.Shell(ctx.WorkspaceDir)
 }

@@ -96,7 +96,11 @@ func infoCurrentProject(cmd *cobra.Command) error {
 	cmd.Printf("  Hash:    %s\n", project.Hash)
 	cmd.Printf("  Backend: %s\n", backendType)
 
-	printContainerStatus(cmd, workspaceDir, project.Config.SandboxName, backend, "  ")
+	if backendType == sbox.BackendHost {
+		cmd.Printf("  Status:  host backend — no container (agent runs directly on host)\n")
+	} else {
+		printContainerStatus(cmd, workspaceDir, project.Config.SandboxName, backend, "  ")
+	}
 
 	if len(project.Config.Profiles) > 0 {
 		cmd.Printf("  Profiles:\n")
@@ -182,9 +186,13 @@ func infoAllProjects(cmd *cobra.Command) error {
 		cmd.Printf("    Backend: %s\n", projectBackendType)
 
 		if workspacePath != "" {
-			backend, _ := sbox.GetBackend(string(projectBackendType), globalConfig)
-			if backend != nil {
-				printContainerStatus(cmd, workspacePath, project.Config.SandboxName, backend, "    ")
+			if projectBackendType == sbox.BackendHost {
+				cmd.Printf("    Status:  host backend — no container (agent runs directly on host)\n")
+			} else {
+				backend, _ := sbox.GetBackend(string(projectBackendType), globalConfig)
+				if backend != nil {
+					printContainerStatus(cmd, workspacePath, project.Config.SandboxName, backend, "    ")
+				}
 			}
 		} else {
 			cmd.Printf("    Status:  unknown (legacy project)\n")

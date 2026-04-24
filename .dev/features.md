@@ -1,0 +1,2 @@
+- `global-sandbox-cleanup` Sandboxes takes a lot of space, we need to have a global way to cleanup last used sandboxes.
+- `backend-host` Let's add a `--backend=host` so that sbox runs locally (no entrypoint but supports sbox loop and bypass permission)
