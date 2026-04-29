@@ -97,7 +97,7 @@ sbox profile remove go         # Remove profile from project
 
 Available profiles:
 - **go** — Go toolchain
-- **rust** — Rust toolchain (cargo, rustc, rustup)
+- **rust** — Rust toolchain (cargo, rustc, rustup, cargo-nextest)
 - **substreams** — Substreams and Firehose Core CLIs, buf, protoc (automatically includes rust)
 - **firehose** — Firehose CLI tools (substreams, firecore, fireeth, dummy-blockchain) and grpcurl
 - **javascript** — JavaScript/TypeScript development tools (pnpm, yarn)

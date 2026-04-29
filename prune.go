@@ -1,8 +1,10 @@
 package sbox
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -164,7 +166,12 @@ func FindPruneCandidates(opts PruneOptions) (candidates []PruneCandidate, kept [
 		// Find associated Docker sandbox (read-only map access — safe without lock).
 		sb, hasSb := sandboxByWorkspace[ws]
 		if !hasSb && proj.Config != nil && proj.Config.SandboxName != "" {
-			sb, hasSb = sandboxByName[proj.Config.SandboxName]
+			if candidate, ok := sandboxByName[proj.Config.SandboxName]; ok && candidate.Workspace == ws {
+				// Only claim the sandbox by name when its recorded workspace still
+				// matches this project. If it differs, the sandbox name was reused
+				// for a new workspace and we must not touch it.
+				sb, hasSb = candidate, true
+			}
 		}
 
 		res := projectResult{}
@@ -279,7 +286,12 @@ func FindPruneCandidates(opts PruneOptions) (candidates []PruneCandidate, kept [
 	}
 
 	// Also include Docker sandboxes with no project entry at all.
+	// Only consider sandboxes whose name starts with "sbox-" to avoid touching
+	// sandboxes created by unrelated tools that also use docker sandbox.
 	for _, ds := range dockerSandboxes {
+		if !strings.HasPrefix(ds.Name, "sbox-") {
+			continue
+		}
 		if accountedSandboxNames[ds.Name] {
 			continue
 		}
@@ -308,21 +320,222 @@ func FindPruneCandidates(opts PruneOptions) (candidates []PruneCandidate, kept [
 	return all, keptEntries, nil
 }
 
-// PruneAll removes all provided candidates and returns any errors encountered.
-// Errors are collected rather than aborting on first failure.
-func PruneAll(candidates []PruneCandidate) []PruneError {
-	var errs []PruneError
+// ContainerPruneCandidate describes a Docker container that is a candidate for pruning.
+type ContainerPruneCandidate struct {
+	// ContainerID is the Docker container ID.
+	ContainerID string
 
-	for _, c := range candidates {
-		if err := pruneOne(c); err != nil {
-			errs = append(errs, PruneError{Candidate: c, Err: err})
+	// ContainerName is the Docker container name (e.g. "sbox-claude-myproject").
+	ContainerName string
+
+	// WorkspacePath is the absolute path to the workspace directory.
+	WorkspacePath string
+
+	// LastUsed is the last-used timestamp (zero if unknown).
+	LastUsed time.Time
+
+	// Status is the container state (e.g. "running", "exited").
+	Status string
+
+	// VolumeName is the first sbox- named volume associated with the container, or "".
+	VolumeName string
+
+	// WorkspaceMissing is true when the workspace directory no longer exists.
+	WorkspaceMissing bool
+}
+
+// FindContainerPruneCandidates returns Docker containers that should be pruned
+// according to opts, along with the containers that are being kept.
+//
+// The selection algorithm:
+//  1. List all Docker containers whose name starts with "sbox-" via ContainerBackend.List().
+//  2. Containers with no workspace path or whose workspace no longer exists on disk
+//     are always candidates (stale).
+//  3. Among containers with existing workspaces, keep the opts.Keep most recently used;
+//     the rest become candidates.
+//
+// Returns (candidates, kept, err).
+func FindContainerPruneCandidates(opts PruneOptions) (candidates []ContainerPruneCandidate, kept []ContainerPruneCandidate, err error) {
+	keep := opts.Keep
+	if keep <= 0 {
+		keep = 5
+	}
+
+	// Build a set of MicroVM sandbox names so we don't treat their underlying
+	// Docker containers as regular containers to prune.
+	sandboxNames := make(map[string]bool)
+	if sandboxes, lsErr := ListDockerSandboxes(); lsErr == nil {
+		for _, sb := range sandboxes {
+			if sb.Name != "" {
+				sandboxNames[sb.Name] = true
+			}
 		}
 	}
 
-	return errs
+	backend := NewContainerBackend(nil)
+	containers, err := backend.List()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var stale []ContainerPruneCandidate
+	var active []ContainerPruneCandidate
+
+	for _, info := range containers {
+		// Skip containers that are MicroVM sandboxes — those are handled by
+		// FindPruneCandidates (the sandbox pruner), not here.
+		if sandboxNames[info.Name] {
+			continue
+		}
+		c := ContainerPruneCandidate{
+			ContainerID:   info.ID,
+			ContainerName: info.Name,
+			WorkspacePath: info.Workspace,
+			Status:        info.Status,
+		}
+
+		if info.Workspace == "" {
+			c.WorkspaceMissing = true
+			stale = append(stale, c)
+			continue
+		}
+
+		if _, statErr := os.Stat(info.Workspace); os.IsNotExist(statErr) {
+			c.WorkspaceMissing = true
+			stale = append(stale, c)
+			continue
+		}
+
+		// Workspace exists — read last-used timestamp.
+		lastUsed, readErr := ReadLastUsed(info.Workspace)
+		if readErr != nil {
+			zlog.Warn("failed to read last-used timestamp for container, treating as zero",
+				zap.String("container", info.Name),
+				zap.String("workspace", info.Workspace),
+				zap.Error(readErr))
+		}
+		c.LastUsed = lastUsed
+		active = append(active, c)
+	}
+
+	// Sort active containers by last-used descending (most recent first).
+	slices.SortFunc(active, func(a, b ContainerPruneCandidate) int {
+		aZero := a.LastUsed.IsZero()
+		bZero := b.LastUsed.IsZero()
+		switch {
+		case aZero && bZero:
+			return 0
+		case aZero:
+			return 1
+		case bZero:
+			return -1
+		}
+		if a.LastUsed.After(b.LastUsed) {
+			return -1
+		}
+		if b.LastUsed.After(a.LastUsed) {
+			return 1
+		}
+		return 0
+	})
+
+	// Keep the first `keep` entries; the rest are candidates.
+	var old []ContainerPruneCandidate
+	var keptEntries []ContainerPruneCandidate
+	for i, c := range active {
+		if i < keep {
+			keptEntries = append(keptEntries, c)
+		} else {
+			old = append(old, c)
+		}
+	}
+
+	// Inspect candidate and stale containers for their volume names.
+	for i := range stale {
+		stale[i].VolumeName = getContainerVolumeName(stale[i].ContainerID)
+	}
+	for i := range old {
+		old[i].VolumeName = getContainerVolumeName(old[i].ContainerID)
+	}
+
+	all := append(stale, old...)
+	return all, keptEntries, nil
 }
 
-func pruneOne(c PruneCandidate) error {
+// PruneOneContainer stops and removes a Docker container and its associated named volume.
+// Errors from individual steps are collected; the first error encountered is returned
+// but later steps still run regardless.
+func PruneOneContainer(c ContainerPruneCandidate) error {
+	var firstErr error
+
+	setErr := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	// 1. Stop container if running.
+	if c.Status == "running" {
+		stopCmd := exec.Command("docker", "stop", c.ContainerID)
+		if err := stopCmd.Run(); err != nil {
+			zlog.Warn("failed to stop container (may already be stopped)",
+				zap.String("container", c.ContainerName),
+				zap.Error(err))
+			// Not setting firstErr here — stop failure is non-fatal if rm succeeds.
+		}
+	}
+
+	// 2. Remove container.
+	var rmStderr bytes.Buffer
+	rmCmd := exec.Command("docker", "rm", c.ContainerID)
+	rmCmd.Stderr = &rmStderr
+	if err := rmCmd.Run(); err != nil {
+		zlog.Warn("failed to remove container",
+			zap.String("container", c.ContainerName),
+			zap.Error(err))
+		setErr(fmt.Errorf("docker rm %q: %w (stderr: %s)", c.ContainerName, err, rmStderr.String()))
+	}
+
+	// 3. Remove associated named volume if present.
+	if c.VolumeName != "" {
+		var volStderr bytes.Buffer
+		volCmd := exec.Command("docker", "volume", "rm", c.VolumeName)
+		volCmd.Stderr = &volStderr
+		if err := volCmd.Run(); err != nil {
+			zlog.Warn("failed to remove container volume",
+				zap.String("volume", c.VolumeName),
+				zap.Error(err))
+			setErr(fmt.Errorf("docker volume rm %q: %w (stderr: %s)", c.VolumeName, err, volStderr.String()))
+		}
+	}
+
+	return firstErr
+}
+
+// getContainerVolumeName inspects a container and returns the first named volume
+// whose name starts with "sbox-", or "" if none is found.
+func getContainerVolumeName(containerID string) string {
+	cmd := exec.Command("docker", "inspect", containerID, "--format", "{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}}\n{{end}}{{end}}")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+
+	for line := range strings.SplitSeq(stdout.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "sbox-") {
+			return line
+		}
+	}
+	return ""
+}
+
+// PruneOne removes the sandbox, its .sbox/ directory, and its project config
+// entry for a single candidate. Errors from individual steps are collected and
+// the first one is returned; later steps still run regardless.
+func PruneOne(c PruneCandidate) error {
 	var firstErr error
 
 	setErr := func(err error) {

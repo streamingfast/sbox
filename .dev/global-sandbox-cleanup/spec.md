@@ -2,31 +2,22 @@
 
 Sandboxes take a lot of space. We need a global way to clean up last-used sandboxes.
 
-## Feedback 2
+## Feedback 5
 
-- `prune UI`
+- I would like that we found orphan Docker sandbox and prune them too. Those will need special handling for sure but for example right now I see:
 
- I would try in sections instead of a big table. Also, we should see a section for those kept. Let's copy https://github.com/streamingfast/firehose-core/blob/develop/cmd/tools/stylex/stylex.go to a stylex/ package in sbox so we have the same coloring sharing. Also for tables rendering, and use table pattern from https://github.com/streamingfast/streamingfast-comparator/blob/master/analyzer_report.go to manage/control the different tables.
+  ```
+  sbox-claude-docker_container_opencode sbox-claude-sbox                      sbox-opencode-sbox
+  sbox-claude-firehose-core             sbox-claude-substreams-solana
+  ```
 
-  Questions before I consider the spec complete:
+  But only three of them have active Sbox project, `sbox-claude-docker_container_opencode` and `sbox-opencode-sbox` are stalled.
 
-  > 1. Comparator table pattern — can you describe what specific pattern from that file you want? Or point
-  me to an alternative location? Does it relate to how column widths are calculated, or how headers are
-  styled?
+  We can find orphan sandbox by checking for all of them that starts with `sbox-...`.
 
-  Yes here https://github.com/streamingfast/streamingfast-comparator/blob/master/analyzer_report.go#L390C1-L408C1
+- Let's add support for `sbox prune container` and `all` would now means sandbox + container.
 
-
-  2. Color per row vs per reason — should the entire prune-candidate row be colored, or only the reason
-  column?
-
-  Let's start with only the reason column to see out if look. For too old reason, shorter it to a single or two words.
-
-  3. Column layout — same 4 columns (sandbox, workspace, last used, reason), or should the kept section
-  drop the reason column?
-
-  I think we should drop probably, it seems to me that in a "section", all reason will be the same. Will fit well with the
-  "kept" table.
+  Render as tables just line sandboxes, separate container from sandboxes. On prune, stop container and delete them + volume.
 
 ### Command
 

@@ -80,6 +80,11 @@ type ProjectConfig struct {
 	// Agent overrides the default agent for this project
 	// Values: "claude", "opencode", or empty to use default
 	Agent string `yaml:"agent"`
+
+	// ExcludeDirs are workspace-relative directories to shadow with anonymous
+	// Docker volumes, preventing them from being synced to the host. Only
+	// applies to the container backend.
+	ExcludeDirs []string `yaml:"exclude_dirs"`
 }
 
 // SboxFileConfig represents the configuration from a sbox.yaml file
@@ -107,6 +112,12 @@ type SboxFileConfig struct {
 	// LoopConfirmations overrides the number of consecutive goal completions
 	// required before `sbox loop` considers the goal truly achieved.
 	LoopConfirmations int `yaml:"loop_confirmations"`
+
+	// ExcludeDirs are workspace-relative directories to shadow with anonymous
+	// Docker volumes, preventing them from being synced to the host. Useful for
+	// large build output directories (e.g. "target", "node_modules") that cause
+	// too many open files on macOS. Only applies to the container backend.
+	ExcludeDirs []string `yaml:"exclude_dirs"`
 
 	// OpenCode contains settings specific to the OpenCode agent.
 	OpenCode *OpenCodeFileConfig `yaml:"opencode,omitempty"`
@@ -539,6 +550,7 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 		Envs:         projectConfig.Envs,
 		Backend:      projectConfig.Backend,
 		Agent:        projectConfig.Agent,
+		ExcludeDirs:  projectConfig.ExcludeDirs,
 	}
 
 	// Merge profiles (combine both lists, removing duplicates)
@@ -572,6 +584,18 @@ func MergeProjectConfig(projectConfig *ProjectConfig, sboxFile *SboxFileLocation
 			resolvedSpec += ":ro"
 		}
 		merged.Volumes = append(merged.Volumes, resolvedSpec)
+	}
+
+	// Merge exclude_dirs (combine both lists, removing duplicates)
+	excludeSet := make(map[string]bool)
+	for _, d := range merged.ExcludeDirs {
+		excludeSet[d] = true
+	}
+	for _, d := range sboxConfig.ExcludeDirs {
+		if !excludeSet[d] {
+			merged.ExcludeDirs = append(merged.ExcludeDirs, d)
+			excludeSet[d] = true
+		}
 	}
 
 	// Merge envs (combine, dedup by name)

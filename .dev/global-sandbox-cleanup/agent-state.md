@@ -61,6 +61,48 @@ Types and functions:
 - [x] `go mod tidy` to promote `charmbracelet/lipgloss` and `go-isatty` to direct deps
 - [x] All tests pass, build succeeds
 
+## Feedback 3 — Table spacing + named-sandbox targeting (2026-04-24)
+
+- [x] Add blank line after each table section (stale / old / kept) for readability
+- [x] `sbox prune sandbox <name...>` accepts named sandbox arguments
+  - Matched sandboxes shown in "Pruning N sandbox(es) | Named" table
+  - Unrecognised names shown in "Unknown N sandbox(es)" table
+  - Dry-run and --force behaviour preserved
+- [x] All tests pass, build succeeds
+
+## Feedback 5 — Orphan container detection and pruning (2026-04-24)
+
+### Design Decisions
+
+- `ContainerPruneCandidate` struct added to `prune.go` in the `sbox` package with fields: `ContainerID`, `ContainerName`, `WorkspacePath`, `LastUsed`, `Status`, `VolumeName`, `WorkspaceMissing`.
+- `FindContainerPruneCandidates(opts PruneOptions)` calls `NewContainerBackend(nil).List()` (already filters for `sbox-` prefix), partitions containers into stale (no workspace or missing workspace) vs active, sorts active by last-used descending, keeps the N most recent, then inspects each candidate for its associated named volume via `getContainerVolumeName`.
+- `PruneOneContainer(c ContainerPruneCandidate)` stops container (if running), removes it, then removes the named volume if present.
+- `getContainerVolumeName(containerID string) string` runs `docker inspect` with a format template and returns the first `sbox-` prefixed named volume.
+- `cmd/sbox/prune.go` updated:
+  - New `pruneContainerE` → `pruneContainers(cmd, args, suppressDryRunHeader)` function mirroring `pruneSandboxes`.
+  - `pruneAllE` now prints `=== Sandboxes ===` / `=== Containers ===` separators, calls both `pruneSandboxes` and `pruneContainers` with `suppressDryRunHeader=true`.
+  - `pruneSandboxes` signature extended with `suppressDryRunHeader bool` to avoid double dry-run headers when called from `pruneAllE`.
+  - `filterContainerProtected`, `printContainerCandidateSection`, `pruneContainersWithProgress` added as container-specific helpers.
+  - Container table columns: Container, Workspace, Last Used (identical structure to sandbox tables).
+
+### Task Checklist
+
+- [x] Add `ContainerPruneCandidate` struct to `prune.go`
+- [x] Add `FindContainerPruneCandidates` to `prune.go`
+- [x] Add `PruneOneContainer` to `prune.go`
+- [x] Add `getContainerVolumeName` helper to `prune.go`
+- [x] Add `pruneContainerE` / `pruneContainers` to `cmd/sbox/prune.go`
+- [x] Update `pruneAllE` to run both sandbox + container pruning with section headers
+- [x] Update `PruneCommand` group description and `all` subcommand description
+- [x] Add `filterContainerProtected`, `printContainerCandidateSection`, `pruneContainersWithProgress` helpers
+- [x] Extend `pruneSandboxes` with `suppressDryRunHeader` parameter
+- [x] `go test ./...` passes
+- [x] `go build ./...` passes
+- [x] `sbox prune container --help` shows new subcommand
+- [x] `sbox prune all` description updated
+- [x] CHANGELOG.md updated
+- [x] Agent-state.md updated
+
 ## Notes
 
 - `ListDockerSandboxes()` already exists in `sandbox.go` and parses `docker sandbox ls` output.

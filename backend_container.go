@@ -108,7 +108,7 @@ func (b *ContainerBackend) Run(opts BackendOptions) error {
 				stopCmd := exec.Command("docker", "stop", existing.ID)
 				_ = stopCmd.Run()
 			}
-			rmCmd := exec.Command("docker", "rm", existing.ID)
+			rmCmd := exec.Command("docker", "rm", "-v", existing.ID)
 			_ = rmCmd.Run()
 			// Fall through to create a new container below
 		} else {
@@ -208,6 +208,18 @@ func (b *ContainerBackend) buildRunArgs(containerName, workspaceDir, image, volu
 		} else {
 			zlog.Warn("docker socket requested but no socket found")
 		}
+	}
+
+	// Shadow excluded dirs with anonymous volumes to prevent host file-descriptor
+	// exhaustion on macOS from large build output trees (e.g. target/, node_modules/).
+	for _, dir := range opts.ProjectConfig.ExcludeDirs {
+		var containerPath string
+		if filepath.IsAbs(dir) {
+			containerPath = dir
+		} else {
+			containerPath = filepath.Join(workspaceDir, dir)
+		}
+		args = append(args, "-v", containerPath)
 	}
 
 	// Mount additional volumes from project config
@@ -407,7 +419,7 @@ func (b *ContainerBackend) Stop(workspaceDir string, remove bool) (*ContainerInf
 			zap.String("container_id", info.ID),
 			zap.String("container_name", info.Name))
 
-		rmCmd := exec.Command("docker", "rm", info.ID)
+		rmCmd := exec.Command("docker", "rm", "-v", info.ID)
 		rmCmd.Stderr = &stderr
 
 		if err := rmCmd.Run(); err != nil {
@@ -603,8 +615,8 @@ func (b *ContainerBackend) Remove(containerID string) error {
 	stopCmd := exec.Command("docker", "stop", containerID)
 	_ = stopCmd.Run() // Ignore error - container might not be running
 
-	// Remove the container
-	cmd := exec.Command("docker", "rm", containerID)
+	// Remove the container and its anonymous volumes (e.g. exclude_dirs shadows)
+	cmd := exec.Command("docker", "rm", "-v", containerID)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 

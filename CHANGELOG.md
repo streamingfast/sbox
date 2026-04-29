@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Add `libclang-dev` to the `rust` profile, required by crates that use `bindgen` or link against LLVM/Clang.
+- Install `cargo-nextest` in the `rust` profile via the official pre-built binary from `get.nexte.st`. Architecture-aware (`amd64` → `linux`, `arm64` → `linux-arm`).
+- Add `exclude_dirs` config option to `sbox.yaml` and per-project config. Lists workspace-relative directories to shadow with anonymous Docker volumes, preventing them from being synced to the host. Solves "too many open files" on macOS when working with large build output trees (e.g. `target/` for Rust, `node_modules/` for Node). Only applies to the container backend. Anonymous volumes are cleaned up automatically when the container is removed (`docker rm -v`).
+
 - Add `--backend=host` support. The host backend runs the AI agent directly on the host machine with no Docker or MicroVM isolation. Supports interactive mode, single-prompt mode, and loop mode (`sbox loop`). The `.sbox/` directory is still written for CLAUDE.md injection and env vars. `sbox shell` and `sbox info` print a clear unsupported message with exit code 1 when the host backend is active. Using `--profile` with the host backend shows a warning that profiles are ignored.
 - Add support for forwarding extra arguments to the agent binary via `--` on `sbox run` (e.g. `sbox run -- --resume <session-id>`). Arguments after `--` are passed verbatim to the agent.
 - Add `sbox prune <all|sandbox>` command to reclaim disk space by removing old and stale sandboxes. Sandboxes whose workspace directory no longer exists are always pruned; the rest are kept based on a `--keep N` (default 5) most-recently-used policy. Dry-run by default; use `--force` to actually delete. Each pruned sandbox removes the Docker sandbox, its `.sbox/` directory, and the project config entry in `~/.config/sbox/projects/`. Projects are inspected concurrently (2×CPU) using `destel/rill` for faster scanning on large project lists or slow filesystems.
@@ -15,13 +19,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Add `load_claude_skills` setting in `sbox.yaml` (opt-in, default off). When enabled for OpenCode sessions, installed Claude Code plugin `SKILL.md` files are automatically converted to OpenCode rules at startup and written to `~/.config/opencode/rules/`. This bridges Claude Code's on-demand skill concept to OpenCode's always-on rules system. `!command` interpolation in skill bodies is preserved as-is for the agent to handle.
 - Forward host git identity (`user.name`, `user.email`) into the sandbox automatically. Values are read from the host's global git config and injected via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` env vars (git 2.31+), making them available to the agent without touching `~/.gitconfig`. Skipped silently if not set on the host, or if `GIT_CONFIG_COUNT` is already present in the environment.
 
+### Added
+
+- Add `sbox prune container` subcommand to find and prune orphan Docker containers whose name starts with `sbox-` and whose workspace no longer exists or that have not been used recently. On prune: stops the container, removes it, then removes its associated named `sbox-` volume. Supports the same `--keep`, `--force`, and `--protect`/`-p` flags as `sbox prune sandbox`. Renders candidates in lipgloss tables with Container, Workspace, and Last Used columns.
+- Add `ContainerPruneCandidate` type, `FindContainerPruneCandidates`, `PruneOneContainer`, and `getContainerVolumeName` to the `sbox` package to support container-level pruning.
+
 ### Changed
 
+- Update `sbox prune all` to run both sandbox pruning and container pruning, displaying results in separate `=== Sandboxes ===` and `=== Containers ===` sections. Previously `all` was equivalent to `sandbox`.
 - Remove plugin forwarding from the host backend. When running with `--backend=host` the agent is already on the host where plugins live natively in its own config directory (e.g. `~/.claude/plugins`). Passing redundant `--plugin-dir` flags is no longer needed and has been removed.
 - Rework `sbox prune` output into three styled lipgloss table sections — "Pruning N sandbox(es) | Missing", "Pruning N sandbox(es) | Too old", and "Keeping N sandbox(es)" — each only shown when non-empty. Uses the new `stylex/` package and `github.com/charmbracelet/lipgloss/table` for consistent terminal styling.
+- Add blank line between each prune table section for readability.
+- Add named-sandbox targeting to `sbox prune sandbox`: pass one or more sandbox names as arguments to target them specifically for deletion. Matched sandboxes are shown in a "Pruning N sandbox(es) | Named" table; unrecognised names appear in a separate "Unknown N sandbox(es)" table. Dry-run and `--force` behaviour are preserved.
+- Add `--protect`/`-p` flag to `sbox prune all` and `sbox prune sandbox` to exempt specific sandboxes from deletion. Accepts comma-separated names per flag value and can be repeated (`-p a,b -p c`). Protected candidates that would otherwise have been pruned appear in a "Protected N sandbox(es)" table instead.
 
 ### Fixed
 
+- Fix `sbox prune` orphan detection including Docker sandboxes created by unrelated tools. Orphan candidates are now limited to sandboxes whose name starts with `sbox-`.
+- Fix `sbox prune` incorrectly associating a live Docker sandbox with a stale project entry when both share the same sandbox name but different workspaces (e.g. two `reth` directories). The name-based fallback lookup now verifies that the sandbox's recorded workspace matches the project before claiming it; if it differs the sandbox is considered unrelated and is left untouched.
 - Fix terminal env vars (`TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`) not being forwarded to existing containers, causing broken TUI rendering and non-functional OSC 8 hyperlinks (Cmd+click on URLs). The previous approach set them via `docker run -e` flags which only apply at container creation time. They are now written to `.sbox/env` on every run and loaded by the entrypoint via `loadEntrypointEnv`, making them available to both Claude and OpenCode regardless of whether the container is new or pre-existing.
 - Fix sandbox firewall instructions inside the sandbox injecting the wrong sandbox name (e.g. `firehose-core` instead of `sbox-opencode-firehose-core`). The sandbox context MD now uses a `{{SBOX_SANDBOX_NAME}}` placeholder that is substituted with the actual Docker sandbox name at prep time. The command is also wrapped in backticks for clean copy-paste.
 

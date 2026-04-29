@@ -34,14 +34,20 @@ ENV PATH="${GOPATH}/bin:${PATH}"
 	},
 	"rust": {
 		Name:        "rust",
-		Description: "Rust programming language toolchain (stable)",
+		Description: "Rust programming language toolchain (stable) with cargo-nextest",
 		DockerfileSnippet: `# Rust toolchain (installed system-wide for all users)
 ENV RUSTUP_HOME="/usr/local/rustup"
 ENV CARGO_HOME="/usr/local/cargo"
 ENV PATH="/usr/local/cargo/bin:${PATH}"
 
-RUN apt-get update && apt-get install -y curl build-essential && \
+RUN apt-get update && apt-get install -y curl build-essential libclang-dev && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path && \
+    case "${TARGETARCH}" in \
+        amd64) NEXTEST_ARCH=linux ;; \
+        arm64) NEXTEST_ARCH=linux-arm ;; \
+        *) echo "unsupported arch for nextest: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    curl -LsSf "https://get.nexte.st/latest/${NEXTEST_ARCH}" | tar zxf - -C /usr/local/cargo/bin && \
     chmod -R a+rwx /usr/local/rustup /usr/local/cargo && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 `,
