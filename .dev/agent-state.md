@@ -5,7 +5,7 @@
 - [x] `global-sandbox-cleanup` — Sandboxes take a lot of space; need a global way to cleanup last-used sandboxes.
 - [x] `backend-host` — Add `--backend=host` so that sbox runs locally (no entrypoint but supports sbox loop and bypass permission).
 - [x] `global-stop` — Similar to `sbox prune`, have a way to stop container/sandboxes via `sbox stop all`.
-- [ ] `add-size-to-info` — Add the size on disk for the sbox project (sandbox size, container, volumes). No spec file exists yet.
+- [x] `add-size-to-info` — Add the size on disk for the sbox project (sandbox size, container, volumes). Complete.
 
 ## Bugs Tracking
 
@@ -53,10 +53,16 @@ See `.dev/global-stop/agent-state.md` for full implementation details.
 
 ### add-size-to-info
 
-**Status**: Spec not yet written. Feature is in features.md but has no `.dev/add-size-to-info/` directory.
+**Status**: Complete.
 
-The feature goal: add size on disk to `sbox info` output (sandbox size, container size, volumes).
-Waiting for user to provide or approve a spec before implementation.
+New `size.go` package in the `sbox` package with `DiskSizeInfo`, `FormatBytes`,
+`GetContainerDiskSize`, `GetVolumeDiskSize`, `GetSandboxDiskSize`, `GetContainerVolumeNameByID`.
+
+`cmd/sbox/info.go` updated with `printDiskSize` which is called from `printContainerStatus`.
+Shows `Size: X MB (container) + Y GB (volume)` for container backend, or `Size: X GB` for
+sandbox backend. Size is omitted silently when unavailable.
+
+See `.dev/add-size-to-info/agent-state.md` for full implementation details.
 
 ## Codebase Notes
 
