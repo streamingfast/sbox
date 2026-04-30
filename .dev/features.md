@@ -1,3 +1,4 @@
 - `global-sandbox-cleanup` Sandboxes takes a lot of space, we need to have a global way to cleanup last used sandboxes.
 - `backend-host` Let's add a `--backend=host` so that sbox runs locally (no entrypoint but supports sbox loop and bypass permission)
 - `global-stop` Similar to `sbox prune`, have a way to stop container/sandboxes via `sbox stop`
+- `add-size-to-info` The feature goal is to add the size on disk on the sbox project which should include sandbox size, container and volumes

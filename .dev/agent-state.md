@@ -4,26 +4,24 @@
 
 - [x] `global-sandbox-cleanup` — Sandboxes take a lot of space; need a global way to cleanup last-used sandboxes.
 - [x] `backend-host` — Add `--backend=host` so that sbox runs locally (no entrypoint but supports sbox loop and bypass permission).
+- [x] `global-stop` — Similar to `sbox prune`, have a way to stop container/sandboxes via `sbox stop all`.
+- [ ] `add-size-to-info` — Add the size on disk for the sbox project (sandbox size, container, volumes). No spec file exists yet.
+
+## Bugs Tracking
+
+- [x] `sandbox instructions for firewall` — Fixed in commit 50c155e. The `{{SBOX_SANDBOX_NAME}}` placeholder is substituted with the actual sandbox name in `embedded/sandbox_backend.md`. The backtick-wrapped example command is also in place.
 
 ## Feature Status Details
 
 ### global-sandbox-cleanup
 
-**Status**: Spec incomplete — needs clarification before implementation can begin.
+**Status**: Complete.
 
-Key questions pending from user:
-1. What does "global" mean? Is this a new `sbox cleanup` command? Or an enhancement to `sbox clean`?
-2. What is "last used"? By last-modified time on the workspace? By sandbox creation time from `docker sandbox ls`?
-3. What gets cleaned up? Docker sandboxes only (via `docker sandbox rm`)? Also `.sbox/` workspace dirs? Also project config in `~/.config/sbox/projects/`?
-4. Should there be a `--keep N` flag to keep the N most recent sandboxes?
-5. Should it interactively list and confirm, or just a dry-run / force mode?
-6. Should it check if the workspace directory still exists and clean stale entries automatically?
-
-See `.dev/global-sandbox-cleanup/spec.md` for current (minimal) spec.
+See `.dev/global-sandbox-cleanup/agent-state.md` for full details.
 
 ### backend-host
 
-**Status**: Implemented.
+**Status**: Complete.
 
 Key design decisions:
 1. `HostBackend` in `backend_host.go` implements the `Backend` interface.
@@ -38,17 +36,27 @@ Key design decisions:
 10. Embedded `embedded/host_backend.md` is injected into CLAUDE.md via `GetBackendContextMD`.
 11. `ValidBackendTypes`, `ValidateBackend`, `GetBackend`, and `Capitalize` all updated for `BackendHost`.
 
-Files changed:
-- `backend.go` — added `BackendHost`, updated `ValidBackendTypes`, `ValidateBackend`, `GetBackend`, `Capitalize`
-- `backend_host.go` — new file, full `Backend` implementation
-- `embed.go` — added `HostBackendContextMD` embed
-- `embedded/host_backend.md` — new embedded context for host environment
-- `cmd/sbox/run.go` — `--profile` warning, description updated
-- `cmd/sbox/loop.go` — `--profile` warning, skip stop for host backend
-- `cmd/sbox/stop.go` — unsupported error for host backend
-- `cmd/sbox/shell.go` — unsupported error for host backend
-- `cmd/sbox/info.go` — host-backend-aware status display
-- `CHANGELOG.md` — entry added
+### global-stop
+
+**Status**: Complete.
+
+`sbox stop` is now a command group with:
+- `sbox stop [--rm] [--all] [-w workspace]` — unchanged current-project stop behavior
+- `sbox stop all [--keep N] [--force]` — stop all running sandboxes + containers globally
+- `sbox stop sandbox [--keep N] [--force]` — stop running sandboxes only
+- `sbox stop container [--keep N] [--force]` — stop running containers only
+
+New files: `stop_global.go` (sbox package), updated `cmd/sbox/stop.go`, updated `sandbox.go`
+(added `StopDockerSandboxByName`), CHANGELOG.md updated.
+
+See `.dev/global-stop/agent-state.md` for full implementation details.
+
+### add-size-to-info
+
+**Status**: Spec not yet written. Feature is in features.md but has no `.dev/add-size-to-info/` directory.
+
+The feature goal: add size on disk to `sbox info` output (sandbox size, container size, volumes).
+Waiting for user to provide or approve a spec before implementation.
 
 ## Codebase Notes
 
@@ -57,11 +65,14 @@ Files changed:
 - `backend.go` — `Backend` interface, `BackendType`, `BackendOptions`, `ResolveBackendType`, `GetBackend`
 - `backend_sandbox.go` — `SandboxBackend` implementing `Backend` via `docker sandbox` commands
 - `backend_container.go` — `ContainerBackend` implementing `Backend` via `docker run` commands
+- `backend_host.go` — `HostBackend` implementing `Backend` for direct host execution
 - `entrypoint.go` — `RunEntrypoint`, `EntrypointConfig`, `PrepareSboxDirectory`; runs inside sandbox/container
-- `sandbox.go` — Low-level sandbox functions (`RunSandbox`, `ListDockerSandboxes`, `FindDockerSandbox`, `CreateDockerSandbox`, etc.)
+- `sandbox.go` — Low-level sandbox functions (`RunSandbox`, `ListDockerSandboxes`, `FindDockerSandbox`, `CreateDockerSandbox`, `StopDockerSandboxByName`, etc.)
 - `config.go` — `Config`, `ProjectConfig`, `SboxFileConfig`, `LoadConfig`, `GetProjectConfig`, `ListProjects`
 - `agent.go` — `AgentType`, `AgentSpec` interface, `GetAgentSpec`
-- `cmd/sbox/` — CLI commands: `run.go`, `stop.go`, `clean.go`, `info.go`, `backend.go`, `common.go`, etc.
+- `prune.go` — `WriteLastUsed`, `ReadLastUsed`, `PruneCandidate`, `ContainerPruneCandidate`, `FindPruneCandidates`, `FindContainerPruneCandidates`, `PruneOne`, `PruneOneContainer`
+- `stop_global.go` — `StopOptions`, `FindSandboxStopCandidates`, `FindContainerStopCandidates`, `StopOneSandboxCandidate`, `StopOneContainerCandidate`
+- `cmd/sbox/` — CLI commands: `run.go`, `stop.go`, `clean.go`, `info.go`, `backend.go`, `common.go`, `prune.go`, etc.
 
 ### Key Types
 
@@ -71,15 +82,12 @@ Files changed:
 - `ValidBackendTypes` — slice checked by `ValidateBackend` and displayed in `backend list`
 - `DefaultBackend` = `BackendSandbox`
 
-### Recent Uncommitted Changes (already in tree, not yet committed)
-
-- `backend.go`: Added `AgentArgs []string` to `BackendOptions`
-- `cmd/sbox/run.go`: Added `ArbitraryArgs()` and pass `args` into `BackendOptions.AgentArgs`
-- `entrypoint.go`: Added `AgentArgs` to `EntrypointConfig`, appended in `RunEntrypoint`, written in `PrepareSboxDirectory`
-
 ### Important Patterns
 
 - New backends: (1) add `BackendType` const, (2) add to `ValidBackendTypes`, (3) implement `Backend` interface in `backend_<name>.go`, (4) add case to `GetBackend`, (5) update `ValidateBackend`
 - Cleanup commands live in `cmd/sbox/clean.go` (handles template images and project data)
 - `ListProjects()` in `config.go` returns all known projects from `~/.config/sbox/projects/`
 - `ListDockerSandboxes()` in `sandbox.go` calls `docker sandbox ls` and parses its table output
+- `prune.go` uses `destel/rill` for concurrent project inspection (2×CPU goroutines)
+- Prune and stop candidate lists are built via `FindPruneCandidates` / `FindContainerPruneCandidates`
+- Stop functions reuse prune candidate discovery but filter by running status and skip deletion

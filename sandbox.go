@@ -790,6 +790,25 @@ func RemoveDockerSandbox(sandboxID string) error {
 	return nil
 }
 
+// StopDockerSandboxByName stops a running Docker sandbox by name using docker sandbox stop.
+// Returns nil if the sandbox is not running or does not exist.
+func StopDockerSandboxByName(name string) error {
+	zlog.Info("stopping docker sandbox by name",
+		zap.String("name", name))
+
+	cmd := exec.Command("docker", "sandbox", "stop", name)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker sandbox stop failed: %w (stderr: %s)", err, stderr.String())
+	}
+
+	zlog.Info("docker sandbox stopped",
+		zap.String("name", name))
+	return nil
+}
+
 // RemoveDockerSandboxByName removes a Docker sandbox by name using docker sandbox rm.
 // This is useful when the sandbox lookup fails but we know the name.
 func RemoveDockerSandboxByName(name string) error {

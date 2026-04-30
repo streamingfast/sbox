@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+### Added
+
+- Add `sbox stop all`, `sbox stop sandbox`, and `sbox stop container` subcommands for globally stopping least-recently-used sandboxes and containers without removing them. Each subcommand supports `--keep N` (default 3) to keep the N most recently used running, and `--force` to actually stop (dry-run by default). Useful to free file descriptor limits when many sandboxes/containers are running simultaneously.
+
 ## v1.8.0
 
 ### Added
