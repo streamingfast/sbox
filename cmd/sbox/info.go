@@ -279,6 +279,7 @@ func printContainerStatus(cmd *cobra.Command, workspaceDir string, containerName
 
 	if info != nil {
 		cmd.Printf("%s  Status: %s\n", prefix, info.Status)
+		printDiskSize(cmd, backend.Name(), info, prefix)
 		if info.Image != "" {
 			cmd.Printf("%s  Image:  %s\n", prefix, info.Image)
 		}
@@ -286,6 +287,38 @@ func printContainerStatus(cmd *cobra.Command, workspaceDir string, containerName
 	}
 
 	cmd.Printf("%s  Status: not created\n", prefix)
+}
+
+// printDiskSize prints disk size information for a container or sandbox.
+func printDiskSize(cmd *cobra.Command, backendName sbox.BackendType, info *sbox.ContainerInfo, prefix string) {
+	switch backendName {
+	case sbox.BackendContainer:
+		sizeInfo := sbox.GetContainerDiskSize(info.ID)
+		if !sizeInfo.HasAnySize() {
+			return
+		}
+		// Find volume name for this container
+		volName := sbox.GetContainerVolumeNameByID(info.ID)
+		if volName != "" {
+			sizeInfo.VolumeSize = sbox.GetVolumeDiskSize(volName)
+		}
+		if sizeInfo.ContainerSize >= 0 && sizeInfo.VolumeSize >= 0 {
+			cmd.Printf("%s  Size:   %s (container) + %s (volume)\n",
+				prefix,
+				sbox.FormatBytes(sizeInfo.ContainerSize),
+				sbox.FormatBytes(sizeInfo.VolumeSize),
+			)
+		} else if sizeInfo.ContainerSize >= 0 {
+			cmd.Printf("%s  Size:   %s\n", prefix, sbox.FormatBytes(sizeInfo.ContainerSize))
+		} else if sizeInfo.VolumeSize >= 0 {
+			cmd.Printf("%s  Size:   %s (volume)\n", prefix, sbox.FormatBytes(sizeInfo.VolumeSize))
+		}
+	case sbox.BackendSandbox:
+		size := sbox.GetSandboxDiskSize(info.Name)
+		if size >= 0 {
+			cmd.Printf("%s  Size:   %s\n", prefix, sbox.FormatBytes(size))
+		}
+	}
 }
 
 // printSandboxCommands prints the docker sandbox create and run commands.
