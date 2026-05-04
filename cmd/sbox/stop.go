@@ -41,7 +41,7 @@ data (profiles, envs, cached files). For container backend, this also
 removes the persistence volume. Asks for confirmation before proceeding.
 
 Use 'sbox stop all' to stop all least-recently-used sandboxes and containers.
-Use 'sbox stop sandbox' or 'sbox stop container' for individual types.
+Use 'sbox stop sandbox', 'sbox stop sbx', or 'sbox stop container' for individual types.
 `),
 		RunE: stopE,
 	}
@@ -54,6 +54,7 @@ Use 'sbox stop sandbox' or 'sbox stop container' for individual types.
 	cmd.AddCommand(newStopAllCmd())
 	cmd.AddCommand(newStopSandboxCmd())
 	cmd.AddCommand(newStopContainerCmd())
+	cmd.AddCommand(newStopSbxCmd())
 
 	parent.AddCommand(cmd)
 })
@@ -149,8 +150,8 @@ func newStopAllCmd() *cobra.Command {
 		Use:   "all",
 		Short: "Stop all least-recently-used sandboxes and containers",
 		Long: strings.TrimSpace(`
-Stop all running Docker MicroVM sandboxes and Docker containers managed by sbox,
-keeping the N most recently used running (--keep).
+Stop all running Docker MicroVM sandboxes (sandbox and sbx backends) and Docker
+containers managed by sbox, keeping the N most recently used running (--keep).
 
 By default this command performs a DRY RUN and prints what would be stopped
 without making any changes. Pass --force to actually stop.
@@ -171,17 +172,21 @@ delete them.
 			sbErr := stopSandboxes(cmd, true)
 
 			fmt.Fprintln(w)
+			fmt.Fprintln(w, stylex.Header("=== Sbx Sandboxes ==="))
+			fmt.Fprintln(w)
+			sbxErr := stopSbxSandboxes(cmd, true)
+
+			fmt.Fprintln(w)
 			fmt.Fprintln(w, stylex.Header("=== Containers ==="))
 			fmt.Fprintln(w)
 			ctErr := stopContainers(cmd, true)
 
-			if sbErr != nil && ctErr != nil {
-				return fmt.Errorf("sandbox stop: %w; container stop: %v", sbErr, ctErr)
+			for _, e := range []error{sbErr, sbxErr, ctErr} {
+				if e != nil {
+					return e
+				}
 			}
-			if sbErr != nil {
-				return sbErr
-			}
-			return ctErr
+			return nil
 		},
 	}
 	addStopFlags(cmd.Flags())
@@ -405,6 +410,95 @@ func printSandboxStopSection(w io.Writer, title string, candidates []sbox.PruneC
 		})
 
 	fmt.Fprintln(w, t.String())
+}
+
+// newStopSbxCmd builds the `sbox stop sbx` subcommand.
+func newStopSbxCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "sbx",
+		Short: "Stop least-recently-used sbx MicroVM sandboxes",
+		Long: strings.TrimSpace(`
+Stop running sbx MicroVM sandboxes managed by sbox, keeping the N most
+recently used running (--keep).
+
+By default this command performs a DRY RUN and prints what would be stopped
+without making any changes. Pass --force to actually stop.
+`),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return stopSbxSandboxes(cmd, false)
+		},
+	}
+	addStopFlags(cmd.Flags())
+	return cmd
+}
+
+// stopSbxSandboxes implements the shared stop logic for sbx MicroVM sandboxes.
+// suppressDryRunHeader suppresses the per-command dry-run note when called from stopAllCmd.
+func stopSbxSandboxes(cmd *cobra.Command, suppressDryRunHeader bool) error {
+	keep, _ := cmd.Flags().GetInt("keep")
+	force, _ := cmd.Flags().GetBool("force")
+	w := cmd.OutOrStdout()
+
+	candidates, kept, err := sbox.FindSbxStopCandidates(sbox.StopOptions{Keep: keep})
+	if err != nil {
+		return fmt.Errorf("failed to find sbx stop candidates: %w", err)
+	}
+
+	if len(candidates) == 0 && len(kept) == 0 {
+		if force {
+			fmt.Fprintln(w, "No running sbx sandboxes to stop.")
+		} else {
+			fmt.Fprintf(w, "No running sbx sandboxes to stop (keeping %d most recently used).\n", keep)
+		}
+		return nil
+	}
+
+	if !force && !suppressDryRunHeader {
+		fmt.Fprintln(w, stylex.Note("sbox stop sbx (dry-run — use --force to actually stop)"))
+		fmt.Fprintln(w)
+	}
+
+	stopVerb := "Stopping"
+	if force {
+		stopVerb = "Stopped"
+	}
+
+	if len(candidates) > 0 {
+		printSandboxStopSection(w, fmt.Sprintf("%s %d sbx sandbox(es) | Least recently used", stopVerb, len(candidates)), candidates)
+		fmt.Fprintln(w)
+	}
+
+	if len(kept) > 0 {
+		printSandboxStopSection(w, fmt.Sprintf("Keeping %d sbx sandbox(es) running", len(kept)), kept)
+		fmt.Fprintln(w)
+	}
+
+	if !force {
+		fmt.Fprintln(w, stylex.Note("Run with --force to stop."))
+		return nil
+	}
+
+	fmt.Fprintln(w)
+	var stopErrs []error
+	for _, c := range candidates {
+		label := cmp(c.SandboxName, c.WorkspacePath)
+		fmt.Fprintf(w, "  Stopping %s ...", label)
+		if err := sbox.StopOneSbxCandidate(c); err != nil {
+			fmt.Fprintf(w, " ERROR: %v\n", err)
+			stopErrs = append(stopErrs, err)
+		} else {
+			fmt.Fprintln(w, " done")
+		}
+	}
+
+	if len(stopErrs) == 0 {
+		fmt.Fprintf(w, "\nSuccessfully stopped %d sbx sandbox(es).\n", len(candidates))
+	} else {
+		fmt.Fprintf(w, "\nStopped %d sbx sandbox(es) with %d error(s).\n", len(candidates)-len(stopErrs), len(stopErrs))
+		return fmt.Errorf("sbx stop completed with errors")
+	}
+
+	return nil
 }
 
 // printContainerStopSection renders a titled table of ContainerPruneCandidates for stop.

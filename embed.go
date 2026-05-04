@@ -19,6 +19,11 @@ var ContainerBackendContextMD string
 //go:embed embedded/host_backend.md
 var HostBackendContextMD string
 
+// SbxBackendContextMD contains instructions for Claude about the sbx MicroVM environment.
+//
+//go:embed embedded/sbx_backend.md
+var SbxBackendContextMD string
+
 // GetBackendContextMD returns the appropriate context markdown for the given backend type.
 func GetBackendContextMD(backend BackendType) string {
 	switch backend {
@@ -28,6 +33,8 @@ func GetBackendContextMD(backend BackendType) string {
 		return SandboxBackendContextMD
 	case BackendHost:
 		return HostBackendContextMD
+	case BackendSbx:
+		return SbxBackendContextMD
 	default:
 		return SandboxBackendContextMD
 	}

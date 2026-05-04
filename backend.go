@@ -15,13 +15,15 @@ const (
 	BackendContainer BackendType = "container"
 	// BackendHost runs the agent directly on the host with no Docker isolation
 	BackendHost BackendType = "host"
+	// BackendSbx uses the top-level `sbx` CLI for Docker Sandbox MicroVM execution
+	BackendSbx BackendType = "sbx"
 )
 
 // DefaultBackend is the default backend type when not specified
 const DefaultBackend = BackendSandbox
 
 // ValidBackendTypes contains all valid backend type values
-var ValidBackendTypes = []BackendType{BackendSandbox, BackendContainer, BackendHost}
+var ValidBackendTypes = []BackendType{BackendSandbox, BackendContainer, BackendHost, BackendSbx}
 
 // Capitalize returns a capitalized display name for the backend type.
 func (bt BackendType) Capitalize() string {
@@ -32,6 +34,8 @@ func (bt BackendType) Capitalize() string {
 		return "Container"
 	case BackendHost:
 		return "Host"
+	case BackendSbx:
+		return "Sbx"
 	default:
 		return string(bt)
 	}
@@ -40,7 +44,7 @@ func (bt BackendType) Capitalize() string {
 // ValidateBackend checks if a backend name is valid
 func ValidateBackend(name string) error {
 	switch BackendType(name) {
-	case BackendSandbox, BackendContainer, BackendHost:
+	case BackendSandbox, BackendContainer, BackendHost, BackendSbx:
 		return nil
 	case "":
 		return nil // Empty means use default
@@ -165,6 +169,8 @@ func GetBackend(backendType string, config *Config) (Backend, error) {
 		return NewContainerBackend(config), nil
 	case BackendHost:
 		return NewHostBackend(config), nil
+	case BackendSbx:
+		return NewSbxBackend(config), nil
 	default:
 		return nil, fmt.Errorf("unknown backend type: %s", backendType)
 	}

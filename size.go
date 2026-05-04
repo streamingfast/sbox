@@ -199,7 +199,34 @@ func GetSandboxDiskSize(sandboxName string) int64 {
 	return -1
 }
 
-// GetContainerVolumeNameByID returns the first "sbox-" named volume for a container,
+// GetSbxSandboxDiskSize returns the disk size of an sbx sandbox in bytes.
+// Tries `sbx inspect` for size information. Returns -1 if the size cannot be determined.
+func GetSbxSandboxDiskSize(sandboxName string) int64 {
+	if sandboxName == "" {
+		return -1
+	}
+
+	for _, field := range []string{"{{.Size}}", "{{.DiskSize}}", "{{.SizeOnDisk}}"} {
+		cmd := exec.Command("sbx", "inspect", sandboxName, "--format", field)
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		if err := cmd.Run(); err != nil {
+			continue
+		}
+		val := strings.TrimSpace(stdout.String())
+		if val != "" && val != "<no value>" {
+			if size, err := strconv.ParseInt(val, 10, 64); err == nil && size > 0 {
+				return size
+			}
+			if size := parseDockerSize(val); size > 0 {
+				return size
+			}
+		}
+	}
+
+	zlog.Debug("sbx inspect did not return size", zap.String("sandbox", sandboxName))
+	return -1
+}
 // or "" if none is found. This is a public wrapper around the internal getContainerVolumeName.
 func GetContainerVolumeNameByID(containerID string) string {
 	return getContainerVolumeName(containerID)

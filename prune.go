@@ -532,7 +532,265 @@ func getContainerVolumeName(containerID string) string {
 	return ""
 }
 
-// PruneOne removes the sandbox, its .sbox/ directory, and its project config
+// FindSbxPruneCandidates returns sbx sandboxes that should be pruned according to opts,
+// along with the sandboxes that are being kept.
+//
+// The selection algorithm mirrors FindPruneCandidates but uses `sbx ls` instead of
+// `docker sandbox ls`. Orphan detection uses project config cross-referencing (sbx
+// sandbox names have no common prefix to filter on).
+//
+// FIXME: sbx stores microVMs in a different folder than docker sandbox.
+// Dangling sandbox detection via folder scan is not yet implemented.
+//
+// Returns (candidates, kept, err).
+func FindSbxPruneCandidates(opts PruneOptions) (candidates []PruneCandidate, kept []PruneCandidate, err error) {
+	keep := opts.Keep
+	if keep <= 0 {
+		keep = 5
+	}
+
+	projects, err := ListProjects()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to list projects: %w", err)
+	}
+
+	sbxSandboxes, err := ListSbxSandboxes()
+	if err != nil {
+		zlog.Warn("failed to list sbx sandboxes (continuing without sandbox list)", zap.Error(err))
+		sbxSandboxes = nil
+	}
+
+	sandboxByWorkspace := make(map[string]SbxSandbox, len(sbxSandboxes))
+	sandboxByName := make(map[string]SbxSandbox, len(sbxSandboxes))
+	for _, sb := range sbxSandboxes {
+		if sb.Workspace != "" {
+			sandboxByWorkspace[sb.Workspace] = sb
+		}
+		sandboxByName[sb.Name] = sb
+	}
+
+	accountedSandboxNames := make(map[string]bool)
+
+	type projectEntry struct {
+		info     ProjectInfo
+		lastUsed time.Time
+		sandbox  SbxSandbox
+		hasSb    bool
+	}
+
+	type projectResult struct {
+		staleCandidate *PruneCandidate
+		activeEntry    *projectEntry
+		sandboxName    string
+	}
+
+	concurrency := 2 * runtime.NumCPU()
+	projectStream := rill.FromSlice(projects, nil)
+	resultStream := rill.Map(projectStream, concurrency, func(proj ProjectInfo) (projectResult, error) {
+		ws := proj.WorkspacePath
+		if ws == "" {
+			return projectResult{}, nil
+		}
+
+		// Only consider projects using the sbx backend.
+		if proj.Config == nil || proj.Config.Backend != string(BackendSbx) {
+			return projectResult{}, nil
+		}
+
+		sb, hasSb := sandboxByWorkspace[ws]
+		if !hasSb && proj.Config != nil && proj.Config.SandboxName != "" {
+			if candidate, ok := sandboxByName[proj.Config.SandboxName]; ok && candidate.Workspace == ws {
+				sb, hasSb = candidate, true
+			}
+		}
+
+		res := projectResult{}
+		if hasSb {
+			res.sandboxName = sb.Name
+		}
+
+		if _, statErr := os.Stat(ws); os.IsNotExist(statErr) {
+			sbName := ""
+			if hasSb {
+				sbName = sb.Name
+			} else if proj.Config != nil {
+				sbName = proj.Config.SandboxName
+			}
+			res.staleCandidate = &PruneCandidate{
+				SandboxName:      sbName,
+				WorkspacePath:    ws,
+				ProjectHash:      proj.Hash,
+				Reason:           "workspace directory no longer exists",
+				WorkspaceMissing: true,
+			}
+			return res, nil
+		}
+
+		lastUsed, readErr := ReadLastUsed(ws)
+		if readErr != nil {
+			zlog.Warn("failed to read last-used timestamp, treating as zero",
+				zap.String("workspace", ws),
+				zap.Error(readErr))
+		}
+
+		res.activeEntry = &projectEntry{
+			info:     proj,
+			lastUsed: lastUsed,
+			sandbox:  sb,
+			hasSb:    hasSb,
+		}
+		return res, nil
+	})
+
+	var stale []PruneCandidate
+	var active []projectEntry
+
+	for res, err := range rill.ToSeq2(resultStream) {
+		if err != nil {
+			zlog.Warn("error inspecting project (skipping)", zap.Error(err))
+			continue
+		}
+		if res.sandboxName != "" {
+			accountedSandboxNames[res.sandboxName] = true
+		}
+		if res.staleCandidate != nil {
+			stale = append(stale, *res.staleCandidate)
+		} else if res.activeEntry != nil {
+			active = append(active, *res.activeEntry)
+		}
+	}
+
+	slices.SortFunc(active, func(a, b projectEntry) int {
+		aZero := a.lastUsed.IsZero()
+		bZero := b.lastUsed.IsZero()
+		switch {
+		case aZero && bZero:
+			return 0
+		case aZero:
+			return 1
+		case bZero:
+			return -1
+		}
+		if a.lastUsed.After(b.lastUsed) {
+			return -1
+		}
+		if b.lastUsed.After(a.lastUsed) {
+			return 1
+		}
+		return 0
+	})
+
+	var old []PruneCandidate
+	var keptEntries []PruneCandidate
+	for i, entry := range active {
+		sbName := ""
+		if entry.hasSb {
+			sbName = entry.sandbox.Name
+		} else if entry.info.Config != nil {
+			sbName = entry.info.Config.SandboxName
+		}
+
+		if i < keep {
+			keptEntries = append(keptEntries, PruneCandidate{
+				SandboxName:   sbName,
+				WorkspacePath: entry.info.WorkspacePath,
+				ProjectHash:   entry.info.Hash,
+				LastUsed:      entry.lastUsed,
+			})
+			continue
+		}
+
+		reason := fmt.Sprintf("outside keep=%d most recently used", keep)
+		old = append(old, PruneCandidate{
+			SandboxName:   sbName,
+			WorkspacePath: entry.info.WorkspacePath,
+			ProjectHash:   entry.info.Hash,
+			LastUsed:      entry.lastUsed,
+			Reason:        reason,
+		})
+	}
+
+	// Orphaned sbx sandboxes: present in `sbx ls` but no project entry claims them.
+	// We cross-reference by workspace path recorded in the project config since sbx
+	// sandbox names have no unique prefix to filter on.
+	// FIXME: sbx stores microVMs in a different folder than docker sandbox; dangling
+	// sandboxes not visible in `sbx ls` (e.g. whose workspace was deleted) cannot be
+	// detected here until folder-based cleanup is implemented.
+	for _, sb := range sbxSandboxes {
+		if accountedSandboxNames[sb.Name] {
+			continue
+		}
+		wsMissing := sb.Workspace != ""
+		if wsMissing {
+			_, statErr := os.Stat(sb.Workspace)
+			wsMissing = os.IsNotExist(statErr)
+		}
+
+		reason := "no sbx project entry found for sandbox"
+		if wsMissing {
+			reason = "no sbx project entry found and workspace directory no longer exists"
+		}
+
+		old = append(old, PruneCandidate{
+			SandboxName:      sb.Name,
+			WorkspacePath:    sb.Workspace,
+			Reason:           reason,
+			WorkspaceMissing: wsMissing,
+		})
+	}
+
+	all := append(stale, old...)
+	return all, keptEntries, nil
+}
+
+// PruneOneSbx removes an sbx sandbox, its .sbox/ directory, and its project config
+// entry for a single candidate. Errors from individual steps are collected and the
+// first one is returned; later steps still run regardless.
+func PruneOneSbx(c PruneCandidate) error {
+	var firstErr error
+
+	setErr := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	if c.SandboxName != "" {
+		if err := RemoveSbxSandboxByName(c.SandboxName); err != nil {
+			zlog.Warn("failed to remove sbx sandbox (may already be gone)",
+				zap.String("sandbox", c.SandboxName),
+				zap.Error(err))
+			setErr(fmt.Errorf("remove sbx sandbox %q: %w", c.SandboxName, err))
+		}
+	}
+
+	if !c.WorkspaceMissing && c.WorkspacePath != "" {
+		sboxDir := filepath.Join(c.WorkspacePath, ".sbox")
+		if err := os.RemoveAll(sboxDir); err != nil {
+			zlog.Warn("failed to remove .sbox directory",
+				zap.String("path", sboxDir),
+				zap.Error(err))
+			setErr(fmt.Errorf("remove .sbox dir %q: %w", sboxDir, err))
+		}
+	}
+
+	if c.ProjectHash != "" {
+		config, err := LoadConfig()
+		if err != nil {
+			setErr(fmt.Errorf("load config: %w", err))
+		} else {
+			projectDir := filepath.Join(config.SboxDataDir, "projects", c.ProjectHash)
+			if err := os.RemoveAll(projectDir); err != nil {
+				zlog.Warn("failed to remove project config directory",
+					zap.String("path", projectDir),
+					zap.Error(err))
+				setErr(fmt.Errorf("remove project config %q: %w", projectDir, err))
+			}
+		}
+	}
+
+	return firstErr
+}
 // entry for a single candidate. Errors from individual steps are collected and
 // the first one is returned; later steps still run regardless.
 func PruneOne(c PruneCandidate) error {

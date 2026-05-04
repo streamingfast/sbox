@@ -163,3 +163,61 @@ func StopOneContainerCandidate(c ContainerPruneCandidate) error {
 		zap.String("container", c.ContainerName))
 	return nil
 }
+
+// FindSbxStopCandidates returns running sbx sandboxes that should be stopped according
+// to opts, along with the running sandboxes that are being kept.
+//
+// Returns (candidates, kept, err).
+func FindSbxStopCandidates(opts StopOptions) (candidates []PruneCandidate, kept []PruneCandidate, err error) {
+	keep := opts.Keep
+	if keep <= 0 {
+		keep = 3
+	}
+
+	allCandidates, allKept, err := FindSbxPruneCandidates(PruneOptions{Keep: 1 << 30})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	sbxSandboxes, err := ListSbxSandboxes()
+	if err != nil {
+		zlog.Warn("failed to list sbx sandboxes for stop candidates", zap.Error(err))
+		sbxSandboxes = nil
+	}
+
+	sandboxStatus := make(map[string]string, len(sbxSandboxes))
+	for _, sb := range sbxSandboxes {
+		sandboxStatus[sb.Name] = sb.Status
+	}
+
+	var runningEntries []PruneCandidate
+	for _, c := range allKept {
+		if c.SandboxName != "" && sandboxStatus[c.SandboxName] == "running" {
+			runningEntries = append(runningEntries, c)
+		}
+	}
+	for _, c := range allCandidates {
+		if c.SandboxName != "" && sandboxStatus[c.SandboxName] == "running" {
+			runningEntries = append(runningEntries, c)
+		}
+	}
+
+	for i, c := range runningEntries {
+		if i < keep {
+			kept = append(kept, c)
+		} else {
+			candidates = append(candidates, c)
+		}
+	}
+
+	return candidates, kept, nil
+}
+
+// StopOneSbxCandidate stops the sbx sandbox for a single PruneCandidate.
+// It does NOT remove the sandbox or its project data — only stops it.
+func StopOneSbxCandidate(c PruneCandidate) error {
+	if c.SandboxName == "" {
+		return fmt.Errorf("no sandbox name for sbx candidate (workspace: %s)", c.WorkspacePath)
+	}
+	return StopSbxSandboxByName(c.SandboxName)
+}

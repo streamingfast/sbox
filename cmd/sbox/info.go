@@ -318,6 +318,11 @@ func printDiskSize(cmd *cobra.Command, backendName sbox.BackendType, info *sbox.
 		if size >= 0 {
 			cmd.Printf("%s  Size:   %s\n", prefix, sbox.FormatBytes(size))
 		}
+	case sbox.BackendSbx:
+		size := sbox.GetSbxSandboxDiskSize(info.Name)
+		if size >= 0 {
+			cmd.Printf("%s  Size:   %s\n", prefix, sbox.FormatBytes(size))
+		}
 	}
 }
 
