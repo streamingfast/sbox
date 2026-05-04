@@ -76,7 +76,14 @@ func (b *SbxBackend) Run(opts BackendOptions) error {
 			zap.String("workspace", opts.WorkspaceDir),
 			zap.String("template", templateImage))
 
-		if err := CreateSbxSandbox(sandboxName, opts.WorkspaceDir, templateImage, agentType, opts.Debug); err != nil {
+		var extraWorkspaceDirs []string
+		if mainRepoRoot, ok := detectGitWorktree(opts.WorkspaceDir); ok {
+			extraWorkspaceDirs = append(extraWorkspaceDirs, mainRepoRoot)
+			zlog.Info("workspace is a git worktree, syncing main repo root into sbx sandbox",
+				zap.String("main_repo_root", mainRepoRoot))
+		}
+
+		if err := CreateSbxSandbox(sandboxName, opts.WorkspaceDir, templateImage, agentType, opts.Debug, extraWorkspaceDirs...); err != nil {
 			if strings.Contains(err.Error(), "already exists") {
 				zlog.Info("sbx sandbox already exists (detected from create error)",
 					zap.String("name", sandboxName))

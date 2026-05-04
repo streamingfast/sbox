@@ -101,6 +101,12 @@ func BuildSandboxCommands(opts SandboxOptions) (*SandboxCommands, error) {
 	absPath, _ := filepath.Abs(opts.WorkspaceDir)
 	createArgs = append(createArgs, spec.BinaryName(), absPath)
 
+	// If workspace is a git linked worktree, also sync the main repo root so git
+	// can resolve the absolute gitdir path stored in the worktree's .git file.
+	if mainRepoRoot, ok := detectGitWorktree(absPath); ok {
+		createArgs = append(createArgs, mainRepoRoot)
+	}
+
 	// Build run command args (always the same simple form)
 	runArgs := []string{"sandbox", "run", sandboxName}
 
@@ -659,7 +665,8 @@ func FindDockerSandboxByName(name string) (*DockerSandbox, error) {
 
 // CreateDockerSandbox creates a new Docker sandbox with the given name and options.
 // Uses `docker sandbox create` command.
-func CreateDockerSandbox(name string, workspaceDir string, templateImage string, agent AgentType, debug bool) error {
+// extraWorkspaceDirs are additional host paths to sync into the sandbox at the same absolute path.
+func CreateDockerSandbox(name string, workspaceDir string, templateImage string, agent AgentType, debug bool, extraWorkspaceDirs ...string) error {
 	absPath, err := filepath.Abs(workspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
@@ -672,7 +679,7 @@ func CreateDockerSandbox(name string, workspaceDir string, templateImage string,
 	spec := GetAgentSpec(agent)
 	agentBinary := spec.BinaryName()
 
-	// Build create command: docker sandbox [--debug] create --name <name> [--template <image>] <agent> <workspace>
+	// Build create command: docker sandbox [--debug] create --name <name> [--template <image>] <agent> <workspace> [EXTRA_WORKSPACE...]
 	args := []string{"sandbox"}
 	if debug {
 		args = append(args, "--debug")
@@ -685,12 +692,14 @@ func CreateDockerSandbox(name string, workspaceDir string, templateImage string,
 		args = append(args, "--template", templateImage)
 	}
 
-	// Add the agent and workspace
+	// Add the agent, workspace, and any extra workspace dirs
 	args = append(args, agentBinary, absPath)
+	args = append(args, extraWorkspaceDirs...)
 
 	zlog.Info("creating docker sandbox",
 		zap.String("name", name),
 		zap.String("workspace", absPath),
+		zap.Strings("extra_workspaces", extraWorkspaceDirs),
 		zap.String("template", templateImage),
 		zap.Bool("debug", debug),
 		zap.Strings("args", args))

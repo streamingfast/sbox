@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Add git worktree support for all three isolation backends (container, sandbox, sbx). When the workspace is a git linked worktree (has a `.git` file instead of a `.git/` directory), sbox automatically makes the main repository root accessible inside the sandbox at the same absolute path. This allows git operations to resolve the gitdir path embedded in the worktree's `.git` file. Container backend uses a bind mount; sandbox and sbx backends pass it as an extra workspace to `docker sandbox create` / `sbx create`.
+
 - Add `sbox stop all`, `sbox stop sandbox`, and `sbox stop container` subcommands for globally stopping least-recently-used sandboxes and containers without removing them. Each subcommand supports `--keep N` (default 3) to keep the N most recently used running, and `--force` to actually stop (dry-run by default). Useful to free file descriptor limits when many sandboxes/containers are running simultaneously.
 - Add disk size information to `sbox info` output. For container backend, shows the container's writable layer size and, if present, the associated named volume size (e.g. `234 MB (container) + 1.1 GB (volume)`). For sandbox backend, attempts to retrieve the sandbox VM disk size via `docker sandbox inspect`. Size is omitted silently if unavailable.
 - Add `sbx` backend for Docker Sandbox MicroVMs managed by the top-level `sbx` CLI tool. Sandbox names follow the `<agent>-<workspace>` convention (no `sbox-` prefix). Select it via `--backend sbx`, `sbox.yaml`, or project/global config.

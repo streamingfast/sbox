@@ -85,7 +85,14 @@ func (b *SandboxBackend) Run(opts BackendOptions) error {
 			zap.String("workspace", opts.WorkspaceDir),
 			zap.String("template", templateImage))
 
-		if err := CreateDockerSandbox(sandboxName, opts.WorkspaceDir, templateImage, agentType, opts.Debug); err != nil {
+		var extraWorkspaceDirs []string
+		if mainRepoRoot, ok := detectGitWorktree(opts.WorkspaceDir); ok {
+			extraWorkspaceDirs = append(extraWorkspaceDirs, mainRepoRoot)
+			zlog.Info("workspace is a git worktree, syncing main repo root into sandbox",
+				zap.String("main_repo_root", mainRepoRoot))
+		}
+
+		if err := CreateDockerSandbox(sandboxName, opts.WorkspaceDir, templateImage, agentType, opts.Debug, extraWorkspaceDirs...); err != nil {
 			// Check if the error is "already exists" - this can happen if our sandbox
 			// lookup failed but the sandbox actually exists
 			if strings.Contains(err.Error(), "already exists") {

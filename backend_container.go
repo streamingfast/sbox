@@ -179,6 +179,14 @@ func (b *ContainerBackend) buildRunArgs(containerName, workspaceDir, image, volu
 	// Mount workspace directory
 	args = append(args, "-v", fmt.Sprintf("%s:%s", workspaceDir, workspaceDir))
 
+	// If workspace is a git linked worktree, also mount the main repo root so git
+	// can follow the absolute gitdir path stored in the worktree's .git file.
+	if mainRepoRoot, ok := detectGitWorktree(workspaceDir); ok {
+		args = append(args, "-v", fmt.Sprintf("%s:%s", mainRepoRoot, mainRepoRoot))
+		zlog.Info("workspace is a git worktree, mounting main repo root",
+			zap.String("main_repo_root", mainRepoRoot))
+	}
+
 	// Mount persistence volume for agent config folder
 	spec := GetAgentSpec(agentType)
 	configDir := spec.ConfigDirName()
@@ -689,6 +697,47 @@ func (b *ContainerBackend) SaveCache(workspaceDir string, agentType AgentType) e
 	// Container backend uses named volumes that automatically persist across container restarts
 	zlog.Debug("container backend uses volumes, no cache save needed")
 	return nil
+}
+
+// detectGitWorktree checks if workspaceDir is a git linked worktree.
+// A linked worktree has a .git file (not directory) pointing to the actual gitdir.
+// Returns the main repository root and true when detected, otherwise empty string and false.
+func detectGitWorktree(workspaceDir string) (string, bool) {
+	gitPath := filepath.Join(workspaceDir, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+
+	content, err := os.ReadFile(gitPath)
+	if err != nil {
+		return "", false
+	}
+
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(content)), "gitdir: ")
+	if !ok {
+		return "", false
+	}
+
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(workspaceDir, gitdir)
+	}
+	gitdir = filepath.Clean(gitdir)
+
+	// The commondir file inside the gitdir points to the main .git directory.
+	commondirBytes, err := os.ReadFile(filepath.Join(gitdir, "commondir"))
+	if err != nil {
+		// Fallback: gitdir is typically .git/worktrees/<name> — go 3 levels up.
+		return filepath.Dir(filepath.Dir(filepath.Dir(gitdir))), true
+	}
+
+	commondir := strings.TrimSpace(string(commondirBytes))
+	if !filepath.IsAbs(commondir) {
+		commondir = filepath.Join(gitdir, commondir)
+	}
+
+	// commondir is the main .git directory; its parent is the main repo root.
+	return filepath.Dir(filepath.Clean(commondir)), true
 }
 
 // getDockerSocketPath returns the Docker socket path to mount.

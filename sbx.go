@@ -219,7 +219,8 @@ func FindSbxSandbox(workspaceDir string) (*SbxSandbox, error) {
 
 // CreateSbxSandbox creates a new sbx sandbox with the given name and options.
 // Uses `sbx create` command.
-func CreateSbxSandbox(name string, workspaceDir string, templateImage string, agent AgentType, debug bool) error {
+// extraWorkspaceDirs are additional host paths to sync into the sandbox, optionally with a ":ro" suffix for read-only.
+func CreateSbxSandbox(name string, workspaceDir string, templateImage string, agent AgentType, debug bool, extraWorkspaceDirs ...string) error {
 	absPath, err := filepath.Abs(workspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
@@ -241,11 +242,14 @@ func CreateSbxSandbox(name string, workspaceDir string, templateImage string, ag
 		args = append(args, "--template", templateImage)
 	}
 
+	// Add the agent, workspace, and any extra workspace dirs (may include ":ro" suffix)
 	args = append(args, agentBinary, absPath)
+	args = append(args, extraWorkspaceDirs...)
 
 	zlog.Info("creating sbx sandbox",
 		zap.String("name", name),
 		zap.String("workspace", absPath),
+		zap.Strings("extra_workspaces", extraWorkspaceDirs),
 		zap.String("template", templateImage),
 		zap.Bool("debug", debug),
 		zap.Strings("args", args))
