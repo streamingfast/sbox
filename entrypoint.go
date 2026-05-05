@@ -1353,12 +1353,14 @@ func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, p
 
 	completionCount := 0
 	iteration := 0
+	loopStart := time.Now()
+	var iterationDurations []time.Duration
 
 	for {
 		iteration++
 
 		if config.MaxIterations > 0 && iteration > config.MaxIterations {
-			ui.MaxReached(config.MaxIterations)
+			ui.MaxReached(config.MaxIterations, time.Since(loopStart), iterationDurations)
 			return nil
 		}
 
@@ -1372,6 +1374,7 @@ func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, p
 		}
 
 		ui.Iteration(iteration, completionCount)
+		iterStart := time.Now()
 
 		// Build args for this iteration: agent-specific prompt flags, then prompt last
 		spec := GetAgentSpec(agentType)
@@ -1379,9 +1382,12 @@ func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, p
 		args = append(args, iterationPrompt)
 
 		if err := runAgentWithStreamTransformer(agentType, args, pluginDirs); err != nil {
+			iterationDurations = append(iterationDurations, time.Since(iterStart))
 			ui.AgentError(err)
 			return fmt.Errorf("loop stopped: agent exited with error: %w", err)
 		}
+
+		iterationDurations = append(iterationDurations, time.Since(iterStart))
 
 		// Check for completion file
 		content, err := os.ReadFile(completionFile)
@@ -1390,7 +1396,7 @@ func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, p
 			ui.Completed(completionCount, requiredConfirmations)
 
 			if completionCount >= requiredConfirmations {
-				ui.Confirmed(iteration)
+				ui.Confirmed(iteration, time.Since(loopStart), iterationDurations)
 				return nil
 			}
 

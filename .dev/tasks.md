@@ -1,1 +1,2 @@
 - [x] Feature @ `.dev/done/feature-sbox-loop-watch.md`
+- [x] Bug `sbox loop` completion report should show how long it took globally + for each iteration

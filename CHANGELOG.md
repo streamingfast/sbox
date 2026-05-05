@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Add timing summary to `sbox loop` completion report. When a loop finishes (goal confirmed or max iterations reached), the output now includes a "Timing Summary" section showing the total elapsed time for the entire loop and the duration of each individual iteration.
+
 - Add `--watch <regex>` flag to `sbox loop`. When specified (can be given multiple times), after the loop completes the command stays alive and watches for changes to workspace files whose relative path matches any of the given regex patterns. Any matching write or create event triggers a new loop run with the same prompt. Watches are inactive while the loop is running. The sandbox/container is kept warm between watch-triggered runs and only stopped on exit (Ctrl+C or error).
 
 - Add git worktree support for all three isolation backends (container, sandbox, sbx). When the workspace is a git linked worktree (has a `.git` file instead of a `.git/` directory), sbox automatically makes the main repository root accessible inside the sandbox at the same absolute path. This allows git operations to resolve the gitdir path embedded in the worktree's `.git` file. Container backend uses a bind mount; sandbox and sbx backends pass it as an extra workspace to `docker sandbox create` / `sbx create`.

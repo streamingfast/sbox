@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	lipgloss "charm.land/lipgloss/v2"
 )
@@ -84,10 +85,11 @@ func (u *UI) Completed(count, required int) {
 	fmt.Fprintln(u.w, StyleSuccess.Render(fmt.Sprintf("✓ Goal completed (%d/%d)", count, required)))
 }
 
-// Confirmed prints the final success message.
-func (u *UI) Confirmed(iterations int) {
+// Confirmed prints the final success message with timing summary.
+func (u *UI) Confirmed(iterations int, total time.Duration, perIteration []time.Duration) {
 	fmt.Fprintln(u.w)
 	fmt.Fprintln(u.w, StyleSuccess.Render(fmt.Sprintf("✓ Goal confirmed complete after %d iterations", iterations)))
+	u.printTimingSummary(total, perIteration)
 }
 
 // Continuing prints the "still working" status.
@@ -100,9 +102,35 @@ func (u *UI) Reconfirming() {
 	fmt.Fprintln(u.w, StyleDim.Render("Re-running to confirm..."))
 }
 
-// MaxReached prints the max iterations exceeded message.
-func (u *UI) MaxReached(max int) {
+// MaxReached prints the max iterations exceeded message with timing summary.
+func (u *UI) MaxReached(max int, total time.Duration, perIteration []time.Duration) {
 	fmt.Fprintln(u.w, StyleWarn.Render(fmt.Sprintf("⚠ Reached maximum iterations (%d)", max)))
+	u.printTimingSummary(total, perIteration)
+}
+
+// printTimingSummary prints the global and per-iteration timing report.
+func (u *UI) printTimingSummary(total time.Duration, perIteration []time.Duration) {
+	fmt.Fprintln(u.w)
+	fmt.Fprintln(u.w, StyleHeader.Render("── Timing Summary ──"))
+	fmt.Fprintf(u.w, "%s %s\n", StyleLabel.Render("Total:"), formatDuration(total))
+	for i, d := range perIteration {
+		fmt.Fprintf(u.w, "%s %s\n", StyleLabel.Render(fmt.Sprintf("Iteration %d:", i+1)), formatDuration(d))
+	}
+}
+
+// formatDuration formats a duration in a human-friendly way,
+// rounding to the nearest second for durations >= 1 minute.
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	minutes := int(d.Minutes())
+	seconds := int(d.Seconds()) % 60
+	if seconds == 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%dm%ds", minutes, seconds)
 }
 
 // AgentError prints an agent error message.
