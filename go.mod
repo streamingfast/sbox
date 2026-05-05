@@ -7,6 +7,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.1
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/destel/rill v0.8.1
+	github.com/fsnotify/fsnotify v1.6.0
 	github.com/kaptinlin/jsonmerge v0.2.13
 	github.com/mattn/go-isatty v0.0.20
 	github.com/spf13/cobra v1.1.3
@@ -36,7 +37,6 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dlclark/regexp2 v1.11.0 // indirect
-	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20251027170946-4849db3c2f7e // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect

@@ -2,11 +2,17 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"syscall"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	. "github.com/streamingfast/cli"
@@ -37,6 +43,11 @@ var LoopCommand = Command(loopE,
 
 		The loop stops only after the agent confirms completion twice in a row,
 		ensuring the goal is truly achieved.
+
+		When --watch is specified, after the loop completes the command stays alive
+		and watches for changes to files matching the given regex patterns. Any
+		matching file change triggers a new loop run with the same prompt. Watches
+		are inactive while the loop is running.
 	`),
 	MaximumNArgs(1),
 	Flags(func(flags *pflag.FlagSet) {
@@ -49,6 +60,7 @@ var LoopCommand = Command(loopE,
 		flags.String("agent", "", "Agent type: 'claude' (default) or 'opencode'")
 		flags.Int("max-iterations", 0, "Maximum number of loop iterations (0 = unlimited)")
 		flags.Int("confirmations", 0, "Number of consecutive goal completions required (default: 2, override via sbox.yaml or global config)")
+		flags.StringArray("watch", nil, "Watch files matching regex pattern and relaunch loop on change (can be specified multiple times)")
 	}),
 )
 
@@ -98,6 +110,13 @@ func loopE(cmd *cobra.Command, args []string) error {
 	agentFlag, _ := cmd.Flags().GetString("agent")
 	maxIterations, _ := cmd.Flags().GetInt("max-iterations")
 	confirmationsFlag, _ := cmd.Flags().GetInt("confirmations")
+	watchPatternStrs, _ := cmd.Flags().GetStringArray("watch")
+
+	// Compile watch patterns
+	watchPatterns, err := compileWatchPatterns(watchPatternStrs)
+	if err != nil {
+		return err
+	}
 
 	if backendFlag != "" {
 		if err := sbox.ValidateBackend(backendFlag); err != nil {
@@ -176,6 +195,9 @@ func loopE(cmd *cobra.Command, args []string) error {
 	if loopConfirmations != 2 {
 		ui.Label("Confirmations", fmt.Sprintf("%d", loopConfirmations))
 	}
+	if len(watchPatternStrs) > 0 {
+		ui.Label("Watching", strings.Join(watchPatternStrs, ", "))
+	}
 
 	// The entrypoint handles all loop iterations internally — sandbox stays warm.
 	opts := sbox.BackendOptions{
@@ -193,20 +215,139 @@ func loopE(cmd *cobra.Command, args []string) error {
 		LoopConfirmations: loopConfirmations,
 	}
 
-	runErr := backend.Run(opts)
+	// Setup signal handling for graceful shutdown in watch mode.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if len(watchPatterns) > 0 {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			select {
+			case <-sigCh:
+				cancel()
+			case <-ctx.Done():
+			}
+			signal.Stop(sigCh)
+		}()
+	}
 
-	// In loop mode the sandbox should not keep running after the loop ends
-	// (whether by completion, error, or Ctrl+C). Stop it so it doesn't
-	// continue consuming resources in the background.
-	// Host backend has no container to stop — skip this step.
-	if backendType != sbox.BackendHost {
-		ui.Status("Stopping sandbox after loop exit...")
-		if _, err := backend.Stop(workspaceDir, false); err != nil {
-			zlog.Warn("failed to stop sandbox after loop", zap.Error(err))
+	stopSandbox := func() {
+		if backendType != sbox.BackendHost {
+			ui.Status("Stopping sandbox after loop exit...")
+			if _, err := backend.Stop(workspaceDir, false); err != nil {
+				zlog.Warn("failed to stop sandbox after loop", zap.Error(err))
+			}
 		}
 	}
 
-	return runErr
+	runErr := backend.Run(opts)
+
+	// No watch patterns — original single-run behavior.
+	if len(watchPatterns) == 0 {
+		stopSandbox()
+		return runErr
+	}
+
+	// Watch mode: after each completed loop, wait for a watched file to change
+	// then relaunch. Exit on error, context cancellation, or signal.
+	for {
+		if runErr != nil {
+			stopSandbox()
+			return runErr
+		}
+		if ctx.Err() != nil {
+			stopSandbox()
+			return nil
+		}
+
+		ui.Status("Watching for file changes... (Ctrl+C to exit)")
+
+		changedFile, watchErr := watchForChanges(ctx, workspaceDir, watchPatterns)
+		if watchErr != nil {
+			// Context cancelled by signal — clean exit.
+			stopSandbox()
+			return nil
+		}
+
+		ui.Status("File changed: %s — relaunching loop...", changedFile)
+		runErr = backend.Run(opts)
+	}
+}
+
+// compileWatchPatterns compiles the given regex pattern strings into *regexp.Regexp values.
+func compileWatchPatterns(patterns []string) ([]*regexp.Regexp, error) {
+	compiled := make([]*regexp.Regexp, 0, len(patterns))
+	for _, pat := range patterns {
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --watch pattern %q: %w", pat, err)
+		}
+		compiled = append(compiled, re)
+	}
+	return compiled, nil
+}
+
+// watchForChanges watches the workspace directory tree for write/create events on
+// files whose workspace-relative path matches any of the given patterns. It returns
+// the relative path of the first matching changed file, or a non-nil error if ctx
+// is cancelled.
+func watchForChanges(ctx context.Context, workspaceDir string, patterns []*regexp.Regexp) (string, error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return "", fmt.Errorf("failed to create file watcher: %w", err)
+	}
+	defer watcher.Close()
+
+	skipDirs := map[string]bool{
+		".git":         true,
+		".sbox":        true,
+		"node_modules": true,
+		"vendor":       true,
+	}
+
+	// Walk and watch all non-skipped directories inside the workspace.
+	if walkErr := filepath.Walk(workspaceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			base := filepath.Base(path)
+			if path != workspaceDir && skipDirs[base] {
+				return filepath.SkipDir
+			}
+			return watcher.Add(path)
+		}
+		return nil
+	}); walkErr != nil {
+		return "", fmt.Errorf("failed to set up workspace watch: %w", walkErr)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return "", fmt.Errorf("file watcher closed unexpectedly")
+			}
+			if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
+				continue
+			}
+			rel, relErr := filepath.Rel(workspaceDir, event.Name)
+			if relErr != nil {
+				continue
+			}
+			for _, pat := range patterns {
+				if pat.MatchString(rel) {
+					return rel, nil
+				}
+			}
+
+		case watchErr := <-watcher.Errors:
+			zlog.Warn("file watcher error", zap.Error(watchErr))
+		}
+	}
 }
 
 // resolveLoopPrompt gets the prompt from args, stdin, or interactively.
