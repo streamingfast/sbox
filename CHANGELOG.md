@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Add `--watch <regex>` flag to `sbox run`. When specified (can be given multiple times), after the interactive session exits the command stays alive and watches for changes to workspace files whose relative path matches any of the given regex patterns. Any matching write or create event triggers a new session. Watches are inactive while the agent is running.
 
+- Add stdin support to `sbox run`. When stdin is not a terminal (i.e., piped), its content is automatically used as the prompt. For example: `cat TASK.md | sbox run`. If a prompt argument is also provided, the argument takes precedence over stdin.
+
 - Add optional prompt argument to `sbox run`. Running `sbox run "<prompt>"` launches the agent interactively with the given prompt pre-seeded. For Claude, the prompt is passed as a positional argument; for OpenCode, it is passed via `--prompt`. The session remains interactive after the prompt is processed. Extra agent args via `--` continue to work alongside the prompt.
 
 - Add timing summary to `sbox loop` completion report. When a loop finishes (goal confirmed or max iterations reached), the output now includes a "Timing Summary" section showing the total elapsed time for the entire loop and the duration of each individual iteration.

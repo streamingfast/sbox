@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	. "github.com/streamingfast/cli"
 	"github.com/streamingfast/sbox"
 	"go.uber.org/zap"
+	"golang.org/x/term"
 )
 
 var RunCommand = Command(runE,
@@ -86,6 +88,18 @@ func runE(cmd *cobra.Command, args []string) error {
 		agentExtraArgs = args[1:]
 	} else {
 		agentExtraArgs = args
+	}
+
+	// If no prompt was provided via argument, check if stdin is piped and read it as the prompt.
+	if interactivePrompt == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
+		stdinBytes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("failed to read stdin: %w", err)
+		}
+		if trimmed := strings.TrimSpace(string(stdinBytes)); trimmed != "" {
+			interactivePrompt = trimmed
+			zlog.Debug("using stdin as prompt", zap.Int("length", len(interactivePrompt)))
+		}
 	}
 
 	// Get workspace directory (default to current directory)
