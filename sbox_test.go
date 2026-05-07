@@ -1338,3 +1338,55 @@ func TestMergeConfigFile_YAML(t *testing.T) {
 	assert.Equal(t, "sandbox_value", result["sandbox_key"])
 	assert.Equal(t, "from_sandbox", result["shared"])
 }
+
+func TestTruncateLabel(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		max   int
+		want  string
+	}{
+		{
+			name:  "short string unchanged",
+			input: "hello",
+			max:   100,
+			want:  "hello",
+		},
+		{
+			name:  "exactly max length unchanged",
+			input: strings.Repeat("a", 100),
+			max:   100,
+			want:  strings.Repeat("a", 100),
+		},
+		{
+			name:  "exceeds max gets truncated with ellipsis",
+			input: strings.Repeat("a", 101),
+			max:   100,
+			want:  strings.Repeat("a", 97) + "...",
+		},
+		{
+			name:  "newline collapsed to space",
+			input: "line one\nline two",
+			max:   100,
+			want:  "line one line two",
+		},
+		{
+			name:  "carriage return and newline collapsed",
+			input: "line one\r\nline two",
+			max:   100,
+			want:  "line one line two",
+		},
+		{
+			name:  "long multiline string truncated",
+			input: strings.Repeat("a", 50) + "\n" + strings.Repeat("b", 60),
+			max:   100,
+			want:  strings.Repeat("a", 50) + " " + strings.Repeat("b", 46) + "...",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateLabel(tt.input, tt.max)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

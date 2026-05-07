@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Fix extra blank lines in markdown rendering for both `claude` and `opencode` stream printers. Glamour pads rendered lines with ANSI-colored spaces that `strings.TrimSpace` cannot detect as blank, causing those padding lines to appear as blank lines in the output. The fix applies ANSI-aware blank detection using `ansi.Strip` before trimming, and switches glamour word wrap to 0 to prevent trailing-space padding entirely.
 
+- Fix `Label` output for long values (e.g. `Prompt`, `Goal`): values are now collapsed to a single line and truncated to 100 characters with a trailing `...` to prevent multi-line or excessively long terminal output.
+
 ### Added
 
 - Add `--watch <regex>` flag to `sbox run`. When specified (can be given multiple times), after the interactive session exits the command stays alive and watches for changes to workspace files whose relative path matches any of the given regex patterns. Any matching write or create event triggers a new session. Watches are inactive while the agent is running.

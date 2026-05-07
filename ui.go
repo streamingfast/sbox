@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	lipgloss "charm.land/lipgloss/v2"
@@ -39,8 +40,24 @@ func (u *UI) Status(format string, args ...any) {
 }
 
 // Label prints a key-value pair with a bold label.
+// The value is collapsed to a single line and truncated to 100 characters if needed.
 func (u *UI) Label(key, value string) {
-	fmt.Fprintf(u.w, "%s %s\n", StyleLabel.Render(key+":"), value)
+	fmt.Fprintf(u.w, "%s %s\n", StyleLabel.Render(key+":"), truncateLabel(value, 100))
+}
+
+// truncateLabel collapses newlines to spaces and truncates s to max runes,
+// appending "..." if the string was longer (keeping total length at max).
+func truncateLabel(s string, max int) string {
+	// Collapse newlines/carriage returns to a single space
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max-3]) + "..."
 }
 
 // Header prints a prominent section header.
