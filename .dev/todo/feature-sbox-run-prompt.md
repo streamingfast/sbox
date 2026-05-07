@@ -56,5 +56,5 @@ When a prompt is provided as an argument to `sbox run`, the agent should launch 
 ## State Tracker
 
 **Last Updated:** 2026-05-07
-**Current Step:** Step 1 — Investigate entrypoint and how prompt is passed to agent
-**Status:** Not started
+**Current Step:** Step 6 — Review Complete
+**Status:** Implementation merged to master. `sbox run "<prompt>"` positional argument support added. `InteractivePrompt` field added to `BackendOptions` and `EntrypointConfig`. `AgentSpec.InteractivePromptArgs()` implemented for Claude (positional arg) and OpenCode (`--prompt` flag). Entrypoint correctly applies prompt when launching agent. CHANGELOG updated. Both features (watch + prompt) were merged together in commit `60c59bd`. Ready for user sign-off to mark done.

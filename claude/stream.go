@@ -10,6 +10,7 @@ import (
 	glamour "charm.land/glamour/v2"
 	"charm.land/glamour/v2/ansi"
 	lipgloss "charm.land/lipgloss/v2"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 // Stream event types from Claude Code --output-format=stream-json
@@ -219,7 +220,7 @@ func uintPtr(u uint) *uint       { return &u }
 func NewStreamPrinter(w io.Writer) *StreamPrinter {
 	renderer, _ := glamour.NewTermRenderer(
 		glamour.WithStyles(newStreamStyle()),
-		glamour.WithWordWrap(100),
+		glamour.WithWordWrap(0), // let the terminal handle wrapping; 0 disables glamour's padding
 	)
 	return &StreamPrinter{w: w, md: renderer}
 }
@@ -460,10 +461,12 @@ func (p *StreamPrinter) printMarkdown(text string) {
 
 	// Add ● prefix to the first line (white dot for text output).
 	// Strip blank lines glamour inserts between blocks — we handle spacing ourselves.
+	// Use ANSI-aware blank detection: glamour pads lines with ANSI-colored spaces that
+	// strings.TrimSpace alone cannot detect as blank.
 	lines := strings.Split(rendered, "\n")
 	first := true
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
+		if strings.TrimSpace(xansi.Strip(line)) == "" {
 			continue
 		}
 		if first {

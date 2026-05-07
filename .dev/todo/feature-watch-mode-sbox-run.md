@@ -42,5 +42,5 @@ Note: `compileWatchPatterns` and `watchForChanges` are defined in `cmd/sbox/loop
 ## State Tracker
 
 **Last Updated:** 2026-05-07
-**Current Step:** Step 1 — Implement --watch flag in sbox run
-**Status:** Not started
+**Current Step:** Step 6 — Review Complete
+**Status:** Implementation merged to master. `--watch` flag added to `sbox run` with full watch loop (signal handling, file watching via `watchForChanges`/`compileWatchPatterns`, relaunches on change). CHANGELOG updated. Both features (watch + prompt) were merged together in commit `60c59bd`. Ready for user sign-off to mark done.
