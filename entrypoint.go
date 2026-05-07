@@ -102,6 +102,11 @@ type EntrypointConfig struct {
 	// Used by `sbox loop` to pass the loop prompt to the agent.
 	Prompt string `yaml:"prompt,omitempty"`
 
+	// InteractivePrompt is an optional prompt to pre-seed the agent with in
+	// interactive mode. Unlike Prompt, the agent remains interactive after
+	// processing the prompt. Used by `sbox run "<prompt>"`.
+	InteractivePrompt string `yaml:"interactive_prompt,omitempty"`
+
 	// Loop mode fields — when LoopMode is true, the entrypoint runs the agent
 	// in a loop until the goal is confirmed complete.
 	LoopMode          bool `yaml:"loop_mode,omitempty"`
@@ -717,6 +722,13 @@ func RunEntrypoint(args []string) error {
 		args = append(spec.PromptArgs(), args...)
 		args = append(args, config.Prompt)
 		return runAgentWithStreamTransformer(AgentType(agentType), args, pluginDirs)
+	}
+
+	// Interactive prompt mode: launch interactively with a pre-seeded prompt.
+	// The agent remains interactive after processing the prompt.
+	if config.InteractivePrompt != "" {
+		elog.Info("adding interactive prompt from entrypoint config", "prompt_length", len(config.InteractivePrompt))
+		args = append(args, spec.InteractivePromptArgs(config.InteractivePrompt)...)
 	}
 
 	// For OpenCode, if no args provided, pass the workspace directory
@@ -1611,6 +1623,7 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 	entrypointConfig := &EntrypointConfig{
 		Agent:             string(agent),
 		Prompt:            opts.Prompt,
+		InteractivePrompt: opts.InteractivePrompt,
 		LoopMode:          opts.LoopMode,
 		MaxIterations:     opts.MaxIterations,
 		LoopConfirmations: opts.LoopConfirmations,

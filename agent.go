@@ -78,6 +78,11 @@ type AgentSpec interface {
 	// is appended as the last argument by the caller.
 	PromptArgs() []string
 
+	// InteractivePromptArgs returns the CLI arguments needed to pre-seed a
+	// prompt in interactive mode. The returned slice is appended to ExecArgs
+	// before the agent is exec'd. The agent remains interactive after processing.
+	InteractivePromptArgs(prompt string) []string
+
 	// NewStreamPrinter creates a stream printer that parses the agent's
 	// JSON stream output and writes human-readable formatted output to w.
 	NewStreamPrinter(w io.Writer) StreamPrinter
@@ -184,6 +189,11 @@ func (a *ClaudeAgent) PromptArgs() []string {
 	return []string{"-p", "--output-format=stream-json", "--verbose"}
 }
 
+func (a *ClaudeAgent) InteractivePromptArgs(prompt string) []string {
+	// Claude accepts the prompt as a positional argument in interactive mode.
+	return []string{prompt}
+}
+
 func (a *ClaudeAgent) NewStreamPrinter(w io.Writer) StreamPrinter {
 	return claude.NewStreamPrinter(w)
 }
@@ -258,6 +268,11 @@ func (a *OpenCodeAgent) ExecArgs(pluginDirs []string) []string {
 
 func (a *OpenCodeAgent) PromptArgs() []string {
 	return []string{"run", "--format=json"}
+}
+
+func (a *OpenCodeAgent) InteractivePromptArgs(prompt string) []string {
+	// OpenCode accepts --prompt flag for pre-seeding interactive mode.
+	return []string{"--prompt", prompt}
 }
 
 func (a *OpenCodeAgent) NewStreamPrinter(w io.Writer) StreamPrinter {

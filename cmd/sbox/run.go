@@ -16,7 +16,7 @@ import (
 )
 
 var RunCommand = Command(runE,
-	"run",
+	"run [prompt]",
 	"Launch Claude in Docker sandbox, container, or directly on the host with configured mounts and profiles",
 	Description(`
 		Launches an AI agent running Claude Code with:
@@ -35,14 +35,28 @@ var RunCommand = Command(runE,
 		- claude (default): Uses Claude Code AI agent
 		- opencode: Uses OpenCode AI agent
 
+		An optional prompt can be provided as a positional argument. The agent
+		launches interactively with the prompt pre-seeded:
+
+		  sbox run "implement the feature described in TASK.md"
+
 		Extra arguments after -- are forwarded verbatim to the agent:
 
 		  sbox run -- --resume <session-id>
+
+		An optional prompt can be provided as a positional argument. The agent
+		launches interactively with the prompt pre-seeded:
+
+		  sbox run "implement the feature described in TASK.md"
 
 		When --watch is specified, after the interactive session exits the command
 		stays alive and watches for changes to files matching the given regex patterns.
 		Any matching file change triggers a new session. Watches are inactive while
 		the agent is running.
+
+		Both prompt and watch can be combined:
+
+		  sbox run "my prompt" -- --resume <session-id>
 	`),
 	ArbitraryArgs(),
 	Flags(func(flags *pflag.FlagSet) {
@@ -61,6 +75,18 @@ var RunCommand = Command(runE,
 // runE launches the Docker sandbox with configured settings
 func runE(cmd *cobra.Command, args []string) error {
 	zlog.Debug("starting sbox run command")
+
+	// Extract optional interactive prompt from first positional arg.
+	// args[0] is the prompt if it doesn't start with '-'; remaining args are
+	// forwarded verbatim to the agent (same as args after -- in the old model).
+	var interactivePrompt string
+	var agentExtraArgs []string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		interactivePrompt = strings.TrimSpace(args[0])
+		agentExtraArgs = args[1:]
+	} else {
+		agentExtraArgs = args
+	}
 
 	// Get workspace directory (default to current directory)
 	workspaceDir, err := cmd.Flags().GetString("workspace")
@@ -242,7 +268,8 @@ func runE(cmd *cobra.Command, args []string) error {
 		Config:            config,
 		ProjectConfig:     projectConfig,
 		SboxFile:          sboxFile,
-		AgentArgs:         args,
+		AgentArgs:         agentExtraArgs,
+		InteractivePrompt: interactivePrompt,
 	}
 
 	// -1 is the default (unset), any other value means the flag was provided
@@ -252,6 +279,9 @@ func runE(cmd *cobra.Command, args []string) error {
 
 	// Run using the selected backend
 	sbox.DefaultUI.Label("Backend", string(backend.Name()))
+	if interactivePrompt != "" {
+		sbox.DefaultUI.Label("Prompt", interactivePrompt)
+	}
 	if len(watchPatternStrs) > 0 {
 		sbox.DefaultUI.Label("Watching", strings.Join(watchPatternStrs, ", "))
 	}

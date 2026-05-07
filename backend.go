@@ -101,6 +101,11 @@ type BackendOptions struct {
 	// Used by `sbox loop` to pass the loop prompt to the agent.
 	Prompt string
 
+	// InteractivePrompt is an optional prompt to pre-seed the agent with in
+	// interactive mode. Unlike Prompt, the agent remains interactive after
+	// processing the prompt. Used by `sbox run "<prompt>"`.
+	InteractivePrompt string
+
 	// Loop mode fields — entrypoint handles iterations internally.
 	LoopMode          bool
 	MaxIterations     int
