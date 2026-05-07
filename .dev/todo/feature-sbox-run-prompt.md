@@ -1,7 +1,7 @@
 # Feature: Support running `sbox run "<prompt>"` with prompt passed in
 
 mode: feature
-state: in_progress
+state: review
 root_git: /Users/maoueh/work/sf/sbox
 worktree: /Users/maoueh/work/sf/sbox/.worktrees/feature-sbox-run-prompt
 branch: feature/feature-sbox-run-prompt

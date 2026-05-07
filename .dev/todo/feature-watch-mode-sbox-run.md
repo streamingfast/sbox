@@ -1,7 +1,7 @@
 # Feature: Add --watch mode to `sbox run`
 
 mode: feature
-state: in_progress
+state: review
 root_git: /Users/maoueh/work/sf/sbox
 worktree: /Users/maoueh/work/sf/sbox/.worktrees/feature-watch-mode-sbox-run
 branch: feature/feature-watch-mode-sbox-run
