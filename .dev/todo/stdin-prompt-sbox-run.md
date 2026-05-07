@@ -1,7 +1,7 @@
 # Support stdin as prompt in sbox run
 
 mode: feature
-state: in_progress
+state: review
 root_git: .worktrees/feature/stdin-prompt-sbox-run
 worktree: .worktrees/feature/stdin-prompt-sbox-run
 branch: feature/stdin-prompt-sbox-run
@@ -23,10 +23,19 @@ Ensure `sbox run` accepts `stdin` as `<prompt>` value so users can do `cat <file
 
 ## Spec & Implementation
 
-<Agent managed>
+### Approach
+
+- Used `golang.org/x/term` (already in go.mod) to detect if stdin is a terminal via `term.IsTerminal(int(os.Stdin.Fd()))`
+- If stdin is NOT a terminal and no prompt arg was provided, read all of stdin with `io.ReadAll(os.Stdin)` and use it as the prompt
+- CLI argument prompt takes precedence over stdin
+
+### Key changes
+
+- `cmd/sbox/run.go`: Added `io` and `golang.org/x/term` imports; added stdin detection block after arg parsing
+- `CHANGELOG.md`: Added entry under `## Unreleased / ### Added`
 
 ## State Tracker
 
 **Last Updated:** 2026-05-07
-**Current Step:** Step 1 — Begin implementation
-**Status:** Starting
+**Current Step:** Step 8 — Mark ready for review
+**Status:** Implementation complete, tests pass, committed
