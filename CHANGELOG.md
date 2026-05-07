@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 
 - Fix `sbox run` hanging on startup when stdin is not a terminal but no data is piped to it (e.g. when launched from certain IDEs, shells, or CI environments). The command now uses a zero-timeout `select` call to check if stdin data is immediately available before attempting to read it, preventing the indefinite block.
+- Fix `sbox run` prompt argument being rejected when it starts with `---` (e.g. YAML front-matter): dashes-only strings are no longer treated as CLI flags.
 
 - Fix extra blank lines in markdown rendering for both `claude` and `opencode` stream printers. Glamour pads rendered lines with ANSI-colored spaces that `strings.TrimSpace` cannot detect as blank, causing those padding lines to appear as blank lines in the output. The fix applies ANSI-aware blank detection using `ansi.Strip` before trimming, and switches glamour word wrap to 0 to prevent trailing-space padding entirely.
 

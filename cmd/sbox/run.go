@@ -74,6 +74,24 @@ var RunCommand = Command(runE,
 	}),
 )
 
+// isFlag reports whether s looks like a CLI flag (starts with '-' followed by
+// at least one ASCII letter or digit). Strings like "---" or "----" that start
+// with dashes but contain no letter/digit flag name are NOT considered flags
+// and can therefore be used as a prompt argument (e.g. YAML front-matter).
+func isFlag(s string) bool {
+	if !strings.HasPrefix(s, "-") {
+		return false
+	}
+	// Strip leading dashes and check that at least one alphanumeric char follows.
+	trimmed := strings.TrimLeft(s, "-")
+	if len(trimmed) == 0 {
+		return false
+	}
+	return trimmed[0] >= 'A' && trimmed[0] <= 'Z' ||
+		trimmed[0] >= 'a' && trimmed[0] <= 'z' ||
+		trimmed[0] >= '0' && trimmed[0] <= '9'
+}
+
 // runE launches the Docker sandbox with configured settings
 func runE(cmd *cobra.Command, args []string) error {
 	zlog.Debug("starting sbox run command")
@@ -83,7 +101,7 @@ func runE(cmd *cobra.Command, args []string) error {
 	// forwarded verbatim to the agent (same as args after -- in the old model).
 	var interactivePrompt string
 	var agentExtraArgs []string
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+	if len(args) > 0 && !isFlag(args[0]) {
 		interactivePrompt = strings.TrimSpace(args[0])
 		agentExtraArgs = args[1:]
 	} else {
