@@ -6,3 +6,5 @@ claudebox
 build
 dist
 .sbox
+.dev/tasks.md
+.dev/loop.md

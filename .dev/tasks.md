@@ -1,2 +1,0 @@
-- [review] .dev/todo/feature-watch-mode-sbox-run.md
-- [review] .dev/todo/feature-sbox-run-prompt.md
