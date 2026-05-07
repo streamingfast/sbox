@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -35,6 +38,11 @@ var RunCommand = Command(runE,
 		Extra arguments after -- are forwarded verbatim to the agent:
 
 		  sbox run -- --resume <session-id>
+
+		When --watch is specified, after the interactive session exits the command
+		stays alive and watches for changes to files matching the given regex patterns.
+		Any matching file change triggers a new session. Watches are inactive while
+		the agent is running.
 	`),
 	ArbitraryArgs(),
 	Flags(func(flags *pflag.FlagSet) {
@@ -46,6 +54,7 @@ var RunCommand = Command(runE,
 		flags.String("backend", "", "Backend type: 'sandbox' (default) or 'container'")
 		flags.String("agent", "", "Agent type: 'claude' (default) or 'opencode'")
 		flags.Duration("startup-delay", -1, "Delay agent startup inside the sandbox (0 = wait forever, e.g. 30s, 5m)")
+		flags.StringArray("watch", nil, "Watch files matching regex pattern and relaunch on change (can be specified multiple times)")
 	}),
 )
 
@@ -135,6 +144,12 @@ func runE(cmd *cobra.Command, args []string) error {
 	startupDelay, err := cmd.Flags().GetDuration("startup-delay")
 	if err != nil {
 		return fmt.Errorf("failed to get startup-delay flag: %w", err)
+	}
+
+	watchPatternStrs, _ := cmd.Flags().GetStringArray("watch")
+	watchPatterns, err := compileWatchPatterns(watchPatternStrs)
+	if err != nil {
+		return err
 	}
 
 	// Resolve which backend to use (CLI > sbox.yaml > project > global > default)
@@ -237,7 +252,54 @@ func runE(cmd *cobra.Command, args []string) error {
 
 	// Run using the selected backend
 	sbox.DefaultUI.Label("Backend", string(backend.Name()))
-	return backend.Run(opts)
+	if len(watchPatternStrs) > 0 {
+		sbox.DefaultUI.Label("Watching", strings.Join(watchPatternStrs, ", "))
+	}
+
+	// Setup signal handling for graceful shutdown in watch mode.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if len(watchPatterns) > 0 {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			select {
+			case <-sigCh:
+				cancel()
+			case <-ctx.Done():
+			}
+			signal.Stop(sigCh)
+		}()
+	}
+
+	runErr := backend.Run(opts)
+
+	// No watch patterns — original single-run behavior.
+	if len(watchPatterns) == 0 {
+		return runErr
+	}
+
+	// Watch mode: after each session, wait for a watched file to change then
+	// relaunch. Exit on error, context cancellation, or signal.
+	for {
+		if runErr != nil {
+			return runErr
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		sbox.DefaultUI.Status("Watching for file changes... (Ctrl+C to exit)")
+
+		changedFile, watchErr := watchForChanges(ctx, workspaceDir, watchPatterns)
+		if watchErr != nil {
+			// Context cancelled by signal — clean exit.
+			return nil
+		}
+
+		sbox.DefaultUI.Status("File changed: %s — relaunching...", changedFile)
+		runErr = backend.Run(opts)
+	}
 }
 
 

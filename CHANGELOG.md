@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Add `--watch <regex>` flag to `sbox run`. When specified (can be given multiple times), after the interactive session exits the command stays alive and watches for changes to workspace files whose relative path matches any of the given regex patterns. Any matching write or create event triggers a new session. Watches are inactive while the agent is running.
+
 - Add timing summary to `sbox loop` completion report. When a loop finishes (goal confirmed or max iterations reached), the output now includes a "Timing Summary" section showing the total elapsed time for the entire loop and the duration of each individual iteration.
 
 - Add `--watch <regex>` flag to `sbox loop`. When specified (can be given multiple times), after the loop completes the command stays alive and watches for changes to workspace files whose relative path matches any of the given regex patterns. Any matching write or create event triggers a new loop run with the same prompt. Watches are inactive while the loop is running. The sandbox/container is kept warm between watch-triggered runs and only stopped on exit (Ctrl+C or error).
