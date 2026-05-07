@@ -213,6 +213,11 @@ func NewStreamPrinter(w io.Writer) *StreamPrinter {
 	return &StreamPrinter{w: w, md: renderer}
 }
 
+// IterationStats returns the accumulated step count and token count for the current run.
+func (p *StreamPrinter) IterationStats() (steps, tokens int) {
+	return p.steps, p.totalTokens
+}
+
 // ProcessLine parses a single OpenCode JSON stream line and prints formatted output.
 func (p *StreamPrinter) ProcessLine(line string) bool {
 	if len(line) == 0 {

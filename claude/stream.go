@@ -141,6 +141,9 @@ type StreamPrinter struct {
 	md        *glamour.TermRenderer
 	lastPrint string // tracks what was last printed: "tool", "result", "text", "thinking"
 	lastTool  string // tracks the last tool name for result formatting
+
+	// Accumulated stats from result events
+	numTurns int
 }
 
 // newStreamStyle returns a glamour style customized for sbox stream output.
@@ -610,10 +613,17 @@ func (p *StreamPrinter) handleResult(event *streamEvent) bool {
 	if event.IsError {
 		fmt.Fprintf(p.w, "%s\n", errorStyle.Render("✗ Error: "+truncate(event.Result, 200)))
 	} else {
+		p.numTurns += event.NumTurns
 		fmt.Fprintf(p.w, "%s %s\n", resultStyle.Render("✓ Done"), dimStyle.Render(fmt.Sprintf("(%d turns, %dms, $%.4f)", event.NumTurns, event.DurationMs, event.TotalCostUSD)))
 	}
 	p.lastPrint = "result"
 	return true
+}
+
+// IterationStats returns the accumulated turn count and token count for the current run.
+// For Claude, tokens are not directly exposed; steps maps to NumTurns and tokens is 0.
+func (p *StreamPrinter) IterationStats() (steps, tokens int) {
+	return p.numTurns, 0
 }
 
 func truncate(s string, max int) string {

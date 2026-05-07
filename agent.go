@@ -31,6 +31,11 @@ type StreamPrinter interface {
 	// ProcessLine parses a single JSON line and prints formatted output.
 	// Returns true if the line was handled, false if skipped/unknown.
 	ProcessLine(line string) bool
+
+	// IterationStats returns the accumulated step count and token count
+	// for the current iteration. Called after the agent run completes to
+	// collect per-iteration metrics for the loop summary report.
+	IterationStats() (steps, tokens int)
 }
 
 // ValidAgentTypes contains all valid agent type values

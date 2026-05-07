@@ -1286,12 +1286,19 @@ func ensureAgentShim(spec AgentSpec, realBinaryPath string) error {
 // stdout through a stream printer. Used in loop mode and single prompt mode
 // where the agent outputs JSON and we want to display human-readable progress.
 func runAgentWithStreamTransformer(agentType AgentType, args []string, pluginDirs []string) error {
+	_, err := runAgentWithStreamTransformerEx(agentType, args, pluginDirs)
+	return err
+}
+
+// runAgentWithStreamTransformerEx is like runAgentWithStreamTransformer but also
+// returns the StreamPrinter so callers (e.g. runLoop) can read accumulated stats.
+func runAgentWithStreamTransformerEx(agentType AgentType, args []string, pluginDirs []string) (StreamPrinter, error) {
 	spec := GetAgentSpec(agentType)
 
 	binaryPath, err := spec.FindBinary()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nERROR: %s binary not found in the sandbox.\n", spec.BinaryName())
-		return fmt.Errorf("failed to find %s: %w", spec.BinaryName(), err)
+		return nil, fmt.Errorf("failed to find %s: %w", spec.BinaryName(), err)
 	}
 
 	argv := spec.ExecArgs(pluginDirs)
@@ -1307,11 +1314,11 @@ func runAgentWithStreamTransformer(agentType AgentType, args []string, pluginDir
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("failed to create stdout pipe: %w", err)
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start agent: %w", err)
+		return nil, fmt.Errorf("failed to start agent: %w", err)
 	}
 
 	printer := spec.NewStreamPrinter(os.Stdout)
@@ -1328,7 +1335,7 @@ func runAgentWithStreamTransformer(agentType AgentType, args []string, pluginDir
 		}
 	}
 
-	return cmd.Wait()
+	return printer, cmd.Wait()
 }
 
 // LoopPromptSuffix is appended to the user's prompt to instruct the agent
@@ -1372,7 +1379,13 @@ func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, p
 		iteration++
 
 		if config.MaxIterations > 0 && iteration > config.MaxIterations {
-			ui.MaxReached(config.MaxIterations, time.Since(loopStart), iterationDurations)
+			ui.PrintLoopReport(LoopReport{
+				Outcome:       "max_reached",
+				Iterations:    len(iterationDurations),
+				MaxIterations: config.MaxIterations,
+				TotalDuration: time.Since(loopStart),
+				PerIteration:  iterationDurations,
+			})
 			return nil
 		}
 
@@ -1393,13 +1406,13 @@ func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, p
 		args := append(spec.PromptArgs(), baseArgs...)
 		args = append(args, iterationPrompt)
 
-		if err := runAgentWithStreamTransformer(agentType, args, pluginDirs); err != nil {
-			iterationDurations = append(iterationDurations, time.Since(iterStart))
+		printer, err := runAgentWithStreamTransformerEx(agentType, args, pluginDirs)
+		iterationDurations = append(iterationDurations, time.Since(iterStart))
+		if err != nil {
 			ui.AgentError(err)
 			return fmt.Errorf("loop stopped: agent exited with error: %w", err)
 		}
-
-		iterationDurations = append(iterationDurations, time.Since(iterStart))
+		_ = printer // printer.IterationStats() available for future per-iteration stat display
 
 		// Check for completion file
 		content, err := os.ReadFile(completionFile)
@@ -1408,7 +1421,14 @@ func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, p
 			ui.Completed(completionCount, requiredConfirmations)
 
 			if completionCount >= requiredConfirmations {
-				ui.Confirmed(iteration, time.Since(loopStart), iterationDurations)
+				ui.PrintLoopReport(LoopReport{
+					Outcome:       "confirmed",
+					Iterations:    iteration,
+					Completions:   completionCount,
+					Required:      requiredConfirmations,
+					TotalDuration: time.Since(loopStart),
+					PerIteration:  iterationDurations,
+				})
 				return nil
 			}
 

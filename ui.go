@@ -109,6 +109,58 @@ func (u *UI) Confirmed(iterations int, total time.Duration, perIteration []time.
 	u.printTimingSummary(total, perIteration)
 }
 
+// LoopReport holds all data needed to render the end-of-loop summary.
+type LoopReport struct {
+	// Outcome is either "confirmed" or "max_reached"
+	Outcome string
+	// Iterations is the number of iterations that ran
+	Iterations int
+	// MaxIterations is the configured limit (only used for max_reached outcome)
+	MaxIterations int
+	// Completions is how many consecutive confirmations were achieved
+	Completions int
+	// Required is the required number of confirmations
+	Required int
+	// TotalDuration is the wall-clock time for the whole loop
+	TotalDuration time.Duration
+	// PerIteration holds the duration of each individual iteration
+	PerIteration []time.Duration
+}
+
+// PrintLoopReport renders the unified end-of-loop summary using Proposal B style:
+// a header line followed by indented label-value rows. When there is only a single
+// iteration, individual iteration timing is hidden and only the Total row is shown.
+func (u *UI) PrintLoopReport(r LoopReport) {
+	fmt.Fprintln(u.w)
+
+	// Header line
+	header := "── Loop Summary " + strings.Repeat("─", 32)
+	fmt.Fprintln(u.w, StyleHeader.Render(header))
+
+	// Status row
+	var statusLine string
+	switch r.Outcome {
+	case "confirmed":
+		statusLine = StyleSuccess.Render(fmt.Sprintf("✓ Goal confirmed (%d iterations)", r.Iterations))
+	case "max_reached":
+		statusLine = StyleWarn.Render(fmt.Sprintf("⚠ Max iterations reached (%d)", r.MaxIterations))
+	default:
+		statusLine = StyleDim.Render(r.Outcome)
+	}
+	fmt.Fprintf(u.w, "  %-12s %s\n", StyleLabel.Render("Status"), statusLine)
+
+	// Total timing row
+	fmt.Fprintf(u.w, "  %-12s %s\n", StyleLabel.Render("Total"), formatDuration(r.TotalDuration))
+
+	// Per-iteration rows: only shown when there are 2 or more iterations
+	if len(r.PerIteration) >= 2 {
+		for i, d := range r.PerIteration {
+			label := fmt.Sprintf("Iteration %d", i+1)
+			fmt.Fprintf(u.w, "    %-10s %s\n", StyleLabel.Render(label), formatDuration(d))
+		}
+	}
+}
+
 // Continuing prints the "still working" status.
 func (u *UI) Continuing() {
 	fmt.Fprintln(u.w, StyleDim.Render("Goal not yet complete, continuing..."))
@@ -120,9 +172,15 @@ func (u *UI) Reconfirming() {
 }
 
 // MaxReached prints the max iterations exceeded message with timing summary.
+// Deprecated: use PrintLoopReport instead.
 func (u *UI) MaxReached(max int, total time.Duration, perIteration []time.Duration) {
-	fmt.Fprintln(u.w, StyleWarn.Render(fmt.Sprintf("⚠ Reached maximum iterations (%d)", max)))
-	u.printTimingSummary(total, perIteration)
+	u.PrintLoopReport(LoopReport{
+		Outcome:       "max_reached",
+		Iterations:    len(perIteration),
+		MaxIterations: max,
+		TotalDuration: total,
+		PerIteration:  perIteration,
+	})
 }
 
 // printTimingSummary prints the global and per-iteration timing report.
