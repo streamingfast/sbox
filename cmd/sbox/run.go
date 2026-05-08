@@ -90,8 +90,11 @@ func runE(cmd *cobra.Command, args []string) error {
 		agentExtraArgs = args
 	}
 
-	// If no prompt was provided via argument, check if stdin is piped and read it as the prompt.
-	if interactivePrompt == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
+	// If no prompt was provided via argument, check if stdin is piped and has data ready.
+	// We only read stdin when it is both non-terminal AND has data immediately available.
+	// Using a zero-timeout select prevents hanging when stdin is not a terminal but no
+	// data was actually piped (e.g. launched from certain shells or IDEs).
+	if interactivePrompt == "" && !term.IsTerminal(int(os.Stdin.Fd())) && stdinHasData() {
 		stdinBytes, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return fmt.Errorf("failed to read stdin: %w", err)
@@ -344,4 +347,23 @@ func runE(cmd *cobra.Command, args []string) error {
 		sbox.DefaultUI.Status("File changed: %s — relaunching...", changedFile)
 		runErr = backend.Run(opts)
 	}
+}
+
+// stdinHasData reports whether stdin has data immediately available for reading.
+// It uses a zero-timeout syscall.Select so it never blocks. This guards against
+// hanging when stdin is not a terminal but also has no data piped to it (e.g.
+// when sbox is launched from certain IDEs, shells, or CI environments that mark
+// stdin as non-terminal without actually supplying any input).
+func stdinHasData() bool {
+	fd := int(os.Stdin.Fd())
+	fdSet := &syscall.FdSet{}
+	fdSetAdd(fdSet, fd)
+	timeout := &syscall.Timeval{Sec: 0, Usec: 0}
+	n, err := syscall.Select(fd+1, fdSet, nil, nil, timeout)
+	return err == nil && n > 0
+}
+
+// fdSetAdd sets a file descriptor in an FdSet.
+func fdSetAdd(set *syscall.FdSet, fd int) {
+	set.Bits[fd/64] |= 1 << (uint(fd) % 64)
 }
