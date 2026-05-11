@@ -354,16 +354,6 @@ func runE(cmd *cobra.Command, args []string) error {
 // hanging when stdin is not a terminal but also has no data piped to it (e.g.
 // when sbox is launched from certain IDEs, shells, or CI environments that mark
 // stdin as non-terminal without actually supplying any input).
-func stdinHasData() bool {
-	fd := int(os.Stdin.Fd())
-	fdSet := &syscall.FdSet{}
-	fdSetAdd(fdSet, fd)
-	timeout := &syscall.Timeval{Sec: 0, Usec: 0}
-	n, err := syscall.Select(fd+1, fdSet, nil, nil, timeout)
-	return err == nil && n > 0
-}
-
-// fdSetAdd sets a file descriptor in an FdSet.
-func fdSetAdd(set *syscall.FdSet, fd int) {
-	set.Bits[fd/64] |= 1 << (uint(fd) % 64)
-}
+//
+// The implementation is platform-specific due to differing syscall.Select
+// signatures on Linux vs Darwin; see stdin_linux.go and stdin_darwin.go.
