@@ -118,6 +118,11 @@ type BackendOptions struct {
 	// AgentArgs are extra arguments forwarded verbatim to the agent binary.
 	// Populated from positional arguments after -- on the sbox run command line.
 	AgentArgs []string
+
+	// RawJSON enables raw JSON output mode. When set, the agent's JSON stream
+	// is printed to stdout as-is instead of being rendered as human-readable output.
+	// Useful for debugging rendering issues by collecting the raw JSON stream.
+	RawJSON bool
 }
 
 // Backend defines the interface for container execution backends

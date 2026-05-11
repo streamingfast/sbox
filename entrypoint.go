@@ -115,7 +115,12 @@ type EntrypointConfig struct {
 
 	// AgentArgs are extra arguments forwarded verbatim to the agent binary.
 	// Populated from positional arguments after -- on the sbox run command line.
-	AgentArgs []string `yaml:"agent_args,omitempty"`
+	AgentArgs []string
+
+	// RawJSON enables raw JSON output mode. When set, the agent's JSON stream
+	// is printed to stdout as-is instead of being rendered as human-readable output.
+	// Useful for debugging rendering issues by collecting the raw JSON stream.
+	RawJSON bool `yaml:"raw_json,omitempty"`
 
 	// OpenCode contains settings specific to the OpenCode agent.
 	OpenCode *OpenCodeSettings `yaml:"opencode,omitempty"`
@@ -721,7 +726,8 @@ func RunEntrypoint(args []string) error {
 		// Agent-specific flags for prompt mode, then positional prompt last
 		args = append(spec.PromptArgs(), args...)
 		args = append(args, config.Prompt)
-		return runAgentWithStreamTransformer(AgentType(agentType), args, pluginDirs)
+		_, err := runAgentWithStreamTransformerEx(AgentType(agentType), args, pluginDirs, config.RawJSON)
+		return err
 	}
 
 	// Interactive prompt mode: launch interactively with a pre-seeded prompt.
@@ -1286,13 +1292,15 @@ func ensureAgentShim(spec AgentSpec, realBinaryPath string) error {
 // stdout through a stream printer. Used in loop mode and single prompt mode
 // where the agent outputs JSON and we want to display human-readable progress.
 func runAgentWithStreamTransformer(agentType AgentType, args []string, pluginDirs []string) error {
-	_, err := runAgentWithStreamTransformerEx(agentType, args, pluginDirs)
+	_, err := runAgentWithStreamTransformerEx(agentType, args, pluginDirs, false)
 	return err
 }
 
 // runAgentWithStreamTransformerEx is like runAgentWithStreamTransformer but also
 // returns the StreamPrinter so callers (e.g. runLoop) can read accumulated stats.
-func runAgentWithStreamTransformerEx(agentType AgentType, args []string, pluginDirs []string) (StreamPrinter, error) {
+// When rawJSON is true, the agent's JSON stream is written to stdout as-is without
+// any rendering, which is useful for debugging rendering issues.
+func runAgentWithStreamTransformerEx(agentType AgentType, args []string, pluginDirs []string, rawJSON bool) (StreamPrinter, error) {
 	spec := GetAgentSpec(agentType)
 
 	binaryPath, err := spec.FindBinary()
@@ -1326,7 +1334,12 @@ func runAgentWithStreamTransformerEx(agentType AgentType, args []string, pluginD
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer for large JSON lines
 	for scanner.Scan() {
-		printer.ProcessLine(scanner.Text())
+		line := scanner.Text()
+		if rawJSON {
+			fmt.Fprintln(os.Stdout, line)
+		} else {
+			printer.ProcessLine(line)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -1406,7 +1419,7 @@ func runLoop(config *EntrypointConfig, agentType AgentType, baseArgs []string, p
 		args := append(spec.PromptArgs(), baseArgs...)
 		args = append(args, iterationPrompt)
 
-		printer, err := runAgentWithStreamTransformerEx(agentType, args, pluginDirs)
+		printer, err := runAgentWithStreamTransformerEx(agentType, args, pluginDirs, config.RawJSON)
 		iterationDurations = append(iterationDurations, time.Since(iterStart))
 		if err != nil {
 			ui.AgentError(err)
@@ -1648,6 +1661,7 @@ func PrepareSboxDirectory(workspaceDir string, config *Config, globalEnvs, proje
 		MaxIterations:     opts.MaxIterations,
 		LoopConfirmations: opts.LoopConfirmations,
 		AgentArgs:         opts.AgentArgs,
+		RawJSON:           opts.RawJSON,
 	}
 
 	if opts.SboxFile != nil && opts.SboxFile.Config != nil && opts.SboxFile.Config.OpenCode != nil {

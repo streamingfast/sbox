@@ -61,6 +61,7 @@ var LoopCommand = Command(loopE,
 		flags.Int("max-iterations", 0, "Maximum number of loop iterations (0 = unlimited)")
 		flags.Int("confirmations", 0, "Number of consecutive goal completions required (default: 2, override via sbox.yaml or global config)")
 		flags.StringArray("watch", nil, "Watch files matching regex pattern and relaunch loop on change (can be specified multiple times)")
+		flags.Bool("raw-json", false, "Output raw JSON stream instead of rendered output (useful for debugging rendering issues)")
 	}),
 )
 
@@ -111,6 +112,7 @@ func loopE(cmd *cobra.Command, args []string) error {
 	maxIterations, _ := cmd.Flags().GetInt("max-iterations")
 	confirmationsFlag, _ := cmd.Flags().GetInt("confirmations")
 	watchPatternStrs, _ := cmd.Flags().GetStringArray("watch")
+	rawJSON, _ := cmd.Flags().GetBool("raw-json")
 
 	// Compile watch patterns
 	watchPatterns, err := compileWatchPatterns(watchPatternStrs)
@@ -213,6 +215,7 @@ func loopE(cmd *cobra.Command, args []string) error {
 		LoopMode:          true,
 		MaxIterations:     maxIterations,
 		LoopConfirmations: loopConfirmations,
+		RawJSON:           rawJSON,
 	}
 
 	// Setup signal handling for graceful shutdown in watch mode.
