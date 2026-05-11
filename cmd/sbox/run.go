@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -87,9 +88,8 @@ func isFlag(s string) bool {
 	if len(trimmed) == 0 {
 		return false
 	}
-	return trimmed[0] >= 'A' && trimmed[0] <= 'Z' ||
-		trimmed[0] >= 'a' && trimmed[0] <= 'z' ||
-		trimmed[0] >= '0' && trimmed[0] <= '9'
+	r := rune(trimmed[0])
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // runE launches the Docker sandbox with configured settings
